@@ -33,9 +33,9 @@ describe('normalizeDescription', () => {
 })
 
 describe('atribuirFingerprints', () => {
-  it('usa o FITID quando o banco fornece', () => {
+  it('usa o FITID quando o banco fornece, sempre como id valido de documento', () => {
     const [a] = atribuirFingerprints(CONTA, [tx({ fitid: 'ABC123' })])
-    expect(a.fingerprint).toBe(`ofx:${CONTA}:ABC123`)
+    expect(a.fingerprint).toMatch(/^ofx_[0-9a-f]{64}$/)
   })
 
   it('dois cafés idênticos no mesmo dia são DUAS transações', () => {
@@ -71,8 +71,8 @@ describe('atribuirFingerprints', () => {
       tx({ fitid: 'REPETIDO', description: 'COMPRA A' }),
       tx({ fitid: 'REPETIDO', description: 'COMPRA B' }),
     ])
-    expect(a.fingerprint).toMatch(/^h:/)
-    expect(b.fingerprint).toMatch(/^h:/)
+    expect(a.fingerprint).toMatch(/^h_/)
+    expect(b.fingerprint).toMatch(/^h_/)
     expect(a.fingerprint).not.toBe(b.fingerprint)
   })
 })
@@ -95,7 +95,7 @@ describe('separarDuplicadas', () => {
   it('remove repetido dentro do próprio lote', () => {
     // Sem isto, o insert em lote estoura na constraint e derruba o import
     // inteiro por causa de uma linha.
-    const repetida = { ...tx({}), fingerprint: 'h:igual' }
+    const repetida = { ...tx({}), fingerprint: 'h_igual' }
     const r = separarDuplicadas([repetida, { ...repetida }], [])
     expect(r.novas).toHaveLength(1)
     expect(r.duplicadas).toHaveLength(1)

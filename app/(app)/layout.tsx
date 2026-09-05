@@ -1,11 +1,11 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase/server'
+import { lerSessao } from '@/lib/firebase/session'
 import { sair } from '../(auth)/login/actions'
 
 const NAV = [
   { href: '/dashboard', label: 'Dashboard' },
-  { href: '/transacoes', label: 'Transações' },
+  { href: '/transacoes', label: 'Transacoes' },
   { href: '/importar', label: 'Importar' },
   { href: '/conta', label: 'Conta' },
 ]
@@ -15,14 +15,10 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode
 }) {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  // O middleware já barra, mas a checagem aqui é o que garante que `user`
-  // existe para os filhos — e sobrevive caso o matcher do middleware mude.
-  if (!user) redirect('/login')
+  // Aqui a sessao e VERIFICADA (assinatura conferida no Admin SDK), diferente
+  // do middleware, que so olha se o cookie existe. Spec 4.4.
+  const sessao = await lerSessao()
+  if (!sessao) redirect('/login')
 
   return (
     <div className="min-h-dvh">

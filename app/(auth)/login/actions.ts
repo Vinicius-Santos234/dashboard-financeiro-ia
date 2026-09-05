@@ -3,16 +3,14 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { createClient } from '@/lib/supabase/server'
+import { criarSessao, encerrarSessao, lerSessao } from '@/lib/firebase/session'
+import { garantirUsuario } from '@/lib/firestore/repo'
 
-export type EstadoAuth = {
-  erro?: string
-  email?: string
-}
+export type EstadoAuth = { erro?: string }
 
-const credenciais = z.object({
-  email: z.email('E-mail inválido.'),
-  senha: z.string().min(8, 'A senha precisa de pelo menos 8 caracteres.'),
+const entrada = z.object({
+  idToken: z.string().min(1),
+  proximo: z.string().optional(),
 })
 
 /**
@@ -23,70 +21,47 @@ const credenciais = z.object({
  * para fora. `//host` também é absoluto (protocol-relative) e por isso entra
  * na checagem.
  */
-function destinoSeguro(proximo: FormDataEntryValue | null): string {
-  if (typeof proximo !== 'string') return '/dashboard'
+function destinoSeguro(proximo: string | undefined): string {
+  if (!proximo) return '/dashboard'
   if (!proximo.startsWith('/') || proximo.startsWith('//')) return '/dashboard'
   return proximo
 }
 
-export async function entrar(
+/**
+ * Recebe o ID token que o SDK cliente produziu e o troca por um cookie de
+ * sessão httpOnly.
+ *
+ * O login em si acontece no browser — é o Firebase Auth que valida a senha.
+ * O que o servidor faz aqui é verificar o token e assinar a sessão, para que
+ * Server Component e Route Handler consigam saber quem é o usuário sem
+ * depender de `localStorage`.
+ */
+export async function abrirSessao(
   _anterior: EstadoAuth,
   formData: FormData
 ): Promise<EstadoAuth> {
-  const email = String(formData.get('email') ?? '')
-  const parsed = credenciais.safeParse({ email, senha: formData.get('senha') })
-
-  // O e-mail volta no estado de propósito: no React 19 o <form action> dá
-  // reset ao terminar a action, inclusive quando ela devolve erro. Sem
-  // devolver o valor, a pessoa erra a senha e perde o e-mail digitado junto.
-  if (!parsed.success) {
-    return { erro: parsed.error.issues[0].message, email }
-  }
-
-  const supabase = await createClient()
-  const { error } = await supabase.auth.signInWithPassword({
-    email: parsed.data.email,
-    password: parsed.data.senha,
+  const parsed = entrada.safeParse({
+    idToken: formData.get('idToken'),
+    proximo: formData.get('proximo') || undefined,
   })
 
-  if (error) {
-    // Mensagem genérica de propósito: dizer "e-mail não existe" entrega quais
-    // contas existem para quem estiver testando de fora.
-    return { erro: 'E-mail ou senha incorretos.', email }
+  if (!parsed.success) return { erro: 'Sessão inválida. Tente entrar de novo.' }
+
+  try {
+    await criarSessao(parsed.data.idToken)
+  } catch {
+    return { erro: 'Não foi possível abrir a sessão. Tente de novo.' }
   }
+
+  const sessao = await lerSessao()
+  if (sessao) await garantirUsuario(sessao.uid, sessao.email)
 
   revalidatePath('/', 'layout')
-  redirect(destinoSeguro(formData.get('proximo')))
-}
-
-export async function cadastrar(
-  _anterior: EstadoAuth,
-  formData: FormData
-): Promise<EstadoAuth> {
-  const email = String(formData.get('email') ?? '')
-  const parsed = credenciais.safeParse({ email, senha: formData.get('senha') })
-
-  if (!parsed.success) {
-    return { erro: parsed.error.issues[0].message, email }
-  }
-
-  const supabase = await createClient()
-  const { error } = await supabase.auth.signUp({
-    email: parsed.data.email,
-    password: parsed.data.senha,
-  })
-
-  if (error) {
-    return { erro: error.message, email }
-  }
-
-  revalidatePath('/', 'layout')
-  redirect('/dashboard')
+  redirect(destinoSeguro(parsed.data.proximo))
 }
 
 export async function sair() {
-  const supabase = await createClient()
-  await supabase.auth.signOut()
+  await encerrarSessao()
   revalidatePath('/', 'layout')
   redirect('/login')
 }

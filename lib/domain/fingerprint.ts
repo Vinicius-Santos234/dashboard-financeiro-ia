@@ -16,8 +16,20 @@ export function normalizeDescription(descricao: string): string {
     .trim()
 }
 
+function sha256(material: string): string {
+  return createHash('sha256').update(material, 'utf8').digest('hex')
+}
+
+/**
+ * Sempre hash hexadecimal com prefixo, e não a string legível.
+ *
+ * O fingerprint é o **id do documento** no Firestore (spec §4.3), e id de
+ * documento não pode conter `/` — que é exatamente o que aparece em FITID de
+ * alguns bancos. Hash resolve por construção, e o prefixo preserva a única
+ * informação que a legibilidade dava: de onde veio a identidade.
+ */
 export function fingerprintPorFitid(accountId: string, fitid: string): string {
-  return `ofx:${accountId}:${fitid}`
+  return 'ofx_' + sha256([accountId, fitid].join('|'))
 }
 
 export function fingerprintPorConteudo(
@@ -35,7 +47,7 @@ export function fingerprintPorConteudo(
     String(seq),
   ].join('|')
 
-  return 'h:' + createHash('sha256').update(material, 'utf8').digest('hex')
+  return 'h_' + sha256(material)
 }
 
 export interface ComFingerprint extends RawTransaction {

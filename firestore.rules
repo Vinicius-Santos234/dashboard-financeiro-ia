@@ -1,0 +1,111 @@
+rules_version = '2';
+
+// Security Rules — spec §4.4.
+//
+// ATENÇÃO AO LIMITE, e ele não está escondido em lugar nenhum: estas regras
+// valem para o SDK **cliente**. O Admin SDK, usado nos Route Handlers, passa
+// por cima de tudo aqui. O que protege o caminho do servidor é a árvore de
+// caminhos em lib/firestore/paths.ts, não este arquivo.
+//
+// Dizer "as Security Rules protegem o sistema" seria falso pela metade — que
+// é a pior metade.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function dono(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function dataIso(s) {
+      return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function mesIso(s) {
+      return s is string && s.matches('^[0-9]{4}-[0-9]{2}$');
+    }
+
+    function categoriaValida(c) {
+      return c == null || c in [
+        'alimentacao', 'transporte', 'moradia', 'saude', 'lazer',
+        'educacao', 'compras', 'contas_fixas', 'receita', 'outros'
+      ];
+    }
+
+    // Tudo do usuário vive aqui embaixo. Sem uid não há caminho.
+    match /users/{uid} {
+      allow read: if dono(uid);
+      allow write: if dono(uid);
+
+      match /accounts/{accountId} {
+        allow read, delete: if dono(uid);
+        allow create, update: if dono(uid)
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0
+          && request.resource.data.kind in ['checking', 'savings', 'credit_card'];
+      }
+
+      match /imports/{importId} {
+        allow read, delete: if dono(uid);
+        allow create, update: if dono(uid)
+          && request.resource.data.source in ['ofx', 'csv']
+          && request.resource.data.status in ['parsed', 'categorized', 'failed'];
+      }
+
+      match /transactions/{fingerprint} {
+        allow read, delete: if dono(uid);
+
+        // O que os `check` do Postgres validavam, agora aqui.
+        allow create: if dono(uid)
+          // Inteiro, não float. `is int` recusa 47.9 — se um dia alguém tentar
+          // gravar reais em vez de centavos, para nesta linha.
+          && request.resource.data.amountCents is int
+          && dataIso(request.resource.data.occurredOn)
+          && mesIso(request.resource.data.month)
+          // `month` tem que ser o mês de `occurredOn`, senão a transação some
+          // do gráfico do mês certo e aparece no errado.
+          && request.resource.data.month == request.resource.data.occurredOn[0:7]
+          && request.resource.data.descriptionRaw is string
+          && request.resource.data.descriptionClean is string
+          && request.resource.data.source in ['ofx', 'csv', 'bot', 'openfinance']
+          && request.resource.data.aiOptOut is bool
+          && categoriaValida(request.resource.data.category);
+
+        // Update só pode mexer na categoria e no opt-out. Valor, data e
+        // descrição vieram do banco e não são editáveis pelo app — se fossem,
+        // o dashboard deixaria de ser um retrato do extrato.
+        allow update: if dono(uid)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(['category', 'categorySource', 'confidence', 'aiOptOut'])
+          && categoriaValida(request.resource.data.category)
+          && request.resource.data.categorySource in ['ai', 'rule', 'user', null];
+      }
+
+      match /rules/{padrao} {
+        allow read, delete: if dono(uid);
+        allow create, update: if dono(uid)
+          && categoriaValida(request.resource.data.category)
+          && request.resource.data.category != null;
+      }
+
+      match /insights/{periodo} {
+        allow read, delete: if dono(uid);
+        allow create, update: if dono(uid) && mesIso(periodo);
+      }
+
+      match /rollups/{mes} {
+        allow read: if dono(uid);
+        // O rollup é derivado (§4.5): quem escreve é o servidor, dentro de uma
+        // transação. Deixar o cliente escrever abriria caminho para o número
+        // do gráfico divergir das transações sem nada quebrar.
+        allow write: if false;
+      }
+    }
+
+    // Nada fora de /users/{uid}. Sem esta linha, uma coleção nova criada por
+    // engano nasceria sem regra nenhuma.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
