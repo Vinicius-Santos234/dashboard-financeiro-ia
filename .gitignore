@@ -49,3 +49,7 @@ tests/fixtures/reais/
 *.ofx
 *.OFX
 !tests/fixtures/derivadas/*.ofx
+
+# Chave de servico do Admin SDK. NUNCA versionar: da acesso total ao projeto,
+# ignorando as Security Rules.
+/SDK
