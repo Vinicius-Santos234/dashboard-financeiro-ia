@@ -16,7 +16,7 @@ export default async function AppLayout({
   children: React.ReactNode
 }) {
   // Aqui a sessao e VERIFICADA (assinatura conferida no Admin SDK), diferente
-  // do middleware, que so olha se o cookie existe. Spec 4.4.
+  // do proxy.ts, que so olha se o cookie existe. Spec 4.4.
   const sessao = await lerSessao()
   if (!sessao) redirect('/login')
 
