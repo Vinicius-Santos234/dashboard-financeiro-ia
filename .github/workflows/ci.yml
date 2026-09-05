@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Botão "Run workflow" na aba Actions. Existe porque parte da suíte depende
+  # de secrets: quando um deles muda (rotação de senha, por exemplo), é preciso
+  # reexecutar sem ter um commit novo para justificar.
+  workflow_dispatch:
 
 # Cancela a rodada anterior quando chega push novo no mesmo branch.
 concurrency:
