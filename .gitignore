@@ -53,3 +53,8 @@ tests/fixtures/reais/
 # Chave de servico do Admin SDK. NUNCA versionar: da acesso total ao projeto,
 # ignorando as Security Rules.
 /SDK
+# Backups temporarios de artefato de build. O `.next` e ignorado, mas um
+# `_next.bak` criado num teste nao era — e um `git add -A` mandou 530
+# arquivos de build (com segredo no cache do Turbopack) para o repositorio.
+*.bak
+_next.bak/
