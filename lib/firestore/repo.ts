@@ -2,7 +2,7 @@ import 'server-only'
 import { FieldValue } from 'firebase-admin/firestore'
 import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
-import type { ComFingerprint } from '@/lib/domain/fingerprint'
+import { separarDuplicadas, type ComFingerprint } from '@/lib/domain/fingerprint'
 import * as p from './paths'
 import {
   aplicarDelta,
@@ -94,6 +94,69 @@ export async function fingerprintsExistentes(
   return achados
 }
 
+export interface ImportDoc {
+  accountId: string
+  source: 'ofx' | 'csv'
+  filename: string
+  fileHash: string
+  periodStart: string | null
+  periodEnd: string | null
+  rowsTotal: number
+  rowsImported: number
+  rowsDuplicated: number
+  rowsDiscarded: number
+  status: 'parsed' | 'categorized' | 'failed'
+  error: string | null
+}
+
+export async function registrarImport(
+  uid: string,
+  dados: ImportDoc
+): Promise<string> {
+  const ref = adminDb().collection(p.importacoes(uid)).doc()
+  await ref.set({ ...dados, createdAt: FieldValue.serverTimestamp() })
+  return ref.id
+}
+
+export async function atualizarImport(
+  uid: string,
+  importId: string,
+  dados: Partial<ImportDoc>
+): Promise<void> {
+  await adminDb().doc(p.importacao(uid, importId)).update(dados)
+}
+
+/**
+ * Importações anteriores do mesmo arquivo, pelo sha256.
+ *
+ * Não bloqueia nada — reimportar é legítimo e quem impede linha duplicada é o
+ * fingerprint. Serve para a tela poder dizer "você já importou este arquivo em
+ * tal data", que é informação e não impedimento.
+ */
+export async function importsComMesmoHash(uid: string, fileHash: string) {
+  const snap = await adminDb()
+    .collection(p.importacoes(uid))
+    .where('fileHash', '==', fileHash)
+    .get()
+
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ImportDoc) }))
+}
+
+/** A conta usada quando o extrato não identifica nenhuma. */
+export async function contaPadrao(
+  uid: string,
+  sugestao: { name: string; institution?: string | null; kind: TipoConta }
+): Promise<string> {
+  const existentes = await adminDb()
+    .collection(p.contas(uid))
+    .where('name', '==', sugestao.name)
+    .limit(1)
+    .get()
+
+  if (!existentes.empty) return existentes.docs[0].id
+  return criarConta(uid, sugestao)
+}
+
 export interface ResultadoGravacao {
   gravadas: number
   jaExistiam: number
@@ -182,23 +245,21 @@ export async function gravarTransacoes(
           ...ids.map((id) => col.doc(id))
         )
 
-        const existentes = new Set(
-          docs.filter((d) => d.exists).map((d) => d.id)
-        )
+        const existentes = docs.filter((d) => d.exists).map((d) => d.id)
 
         // Duplicata é decidida por LEITURA, não por capturar exceção. A versão
         // anterior fazia `catch { jaExistiam += 1 }`, que contava timeout e
         // indisponibilidade como "já existia" — linhas nunca gravadas sumiam do
         // relatório com o rótulo errado. Agora erro de infraestrutura sobe e
         // derruba o import, que é o comportamento honesto.
-        const novas = pedaco.filter(
-          (t) =>
-            !existentes.has(t.fingerprint) &&
-            !t.alternativos.some((id) => existentes.has(id))
-        )
+        //
+        // A decisão em si é a mesma de `separarDuplicadas`, e é ela que roda —
+        // não uma cópia. Reimplementar o casamento aqui faria os testes do
+        // critério de aceite da E2 provarem uma função que o app não chama.
+        const { novas, duplicadas } = separarDuplicadas(pedaco, existentes)
 
         if (novas.length === 0) {
-          return { gravadas: 0, jaExistiam: pedaco.length }
+          return { gravadas: 0, jaExistiam: duplicadas.length }
         }
 
         const base = rollupSnap.exists
@@ -226,7 +287,7 @@ export async function gravarTransacoes(
 
         return {
           gravadas: novas.length,
-          jaExistiam: pedaco.length - novas.length,
+          jaExistiam: duplicadas.length,
         }
       })
 
