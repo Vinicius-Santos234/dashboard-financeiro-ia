@@ -47,6 +47,32 @@ function novaInstancia(nome: string) {
   return { app, auth: getAuth(app), db: getFirestore(app) }
 }
 
+/**
+ * Entra e, se falhar, diz **por quê** em vez de repassar o código do Firebase.
+ *
+ * `auth/invalid-credential` cru não ajuda quem lê o log do CI: a causa mais
+ * provável ali não é senha digitada errada, é secret desatualizado depois de
+ * uma rotação de senha — que é exatamente o que aconteceu na primeira vez que
+ * este teste rodou em CI.
+ */
+async function entrar(auth: Auth, email: string, senha: string, quem: string) {
+  try {
+    return await signInWithEmailAndPassword(auth, email, senha)
+  } catch (erro) {
+    const codigo = (erro as { code?: string }).code ?? 'desconhecido'
+    if (codigo === 'auth/invalid-credential' || codigo === 'auth/wrong-password') {
+      throw new Error(
+        `Login do usuário ${quem} (${email}) recusado (${codigo}).\n` +
+          'Causa provável: a senha aqui não é a que está no Firebase.\n' +
+          '  - Localmente: rode `npm run seed:usuarios`.\n' +
+          '  - No CI: atualize os secrets TEST_USER_A_PASSWORD e ' +
+          'TEST_USER_B_PASSWORD, que ficam desatualizados a cada rotação.'
+      )
+    }
+    throw erro
+  }
+}
+
 const TX_DE_B = 'h_teste_isolamento_do_b'
 
 describe.skipIf(!configurado)('isolamento entre usuários', () => {
@@ -59,8 +85,8 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
     A = novaInstancia('teste-a')
     B = novaInstancia('teste-b')
 
-    uidA = (await signInWithEmailAndPassword(A.auth, A_EMAIL!, A_SENHA!)).user.uid
-    uidB = (await signInWithEmailAndPassword(B.auth, B_EMAIL!, B_SENHA!)).user.uid
+    uidA = (await entrar(A.auth, A_EMAIL!, A_SENHA!, 'A')).user.uid
+    uidB = (await entrar(B.auth, B_EMAIL!, B_SENHA!, 'B')).user.uid
     expect(uidA).not.toBe(uidB)
 
     // B grava algo que A nunca deveria ver.
