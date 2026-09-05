@@ -32,13 +32,18 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  if (temCookie && pathname === '/login') {
-    const url = request.nextUrl.clone()
-    url.pathname = '/dashboard'
-    url.search = ''
-    return NextResponse.redirect(url)
-  }
-
+  // Deliberadamente NÃO existe aqui o caminho inverso ("tem cookie e está no
+  // /login, manda para o /dashboard").
+  //
+  // A presença do cookie não prova que a sessão vale, e quem verifica de
+  // verdade é o layout, em Node. Um cookie expirado ou revogado passaria por
+  // aqui, seria mandado ao /dashboard, o layout recusaria e mandaria de volta
+  // ao /login — e o middleware de novo ao /dashboard, num loop infinito que
+  // deixa a pessoa sem conseguir nem fazer login outra vez.
+  //
+  // Quem manda o usuário já autenticado para o dashboard é a própria página de
+  // login, depois de a sessão ser verificada. Redirecionar por indício é
+  // aceitável para PROTEGER rota; para EXPULSAR de uma rota pública, não.
   return NextResponse.next()
 }
 

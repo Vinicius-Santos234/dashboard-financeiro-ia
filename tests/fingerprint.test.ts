@@ -95,10 +95,68 @@ describe('separarDuplicadas', () => {
   it('remove repetido dentro do próprio lote', () => {
     // Sem isto, o insert em lote estoura na constraint e derruba o import
     // inteiro por causa de uma linha.
-    const repetida = { ...tx({}), fingerprint: 'h_igual' }
+    const repetida = { ...tx({}), fingerprint: 'h_igual', alternativos: [] }
     const r = separarDuplicadas([repetida, { ...repetida }], [])
     expect(r.novas).toHaveLength(1)
     expect(r.duplicadas).toHaveLength(1)
+  })
+
+  it('casa pelo alternativo quando a forma gravada foi a outra', () => {
+    // O caso que o Codex achou, e que a reimportação do mesmo arquivo não
+    // pegava: a escolha entre FITID e hash depende de quantas vezes o FITID
+    // aparece NO ARQUIVO ATUAL, e isso muda entre arquivos sobrepostos.
+    const [linha] = atribuirFingerprints(CONTA, [tx({ fitid: 'X' })])
+
+    // Simula o banco tendo gravado a MESMA linha sob a forma alternativa.
+    const r = separarDuplicadas([linha], linha.alternativos)
+
+    expect(r.novas).toHaveLength(0)
+    expect(r.duplicadas).toHaveLength(1)
+  })
+})
+
+describe('arquivos sobrepostos — o achado 3.3 do Codex', () => {
+  // Arquivo A: o banco emitiu o FITID 'X' duas vezes (defeito real de banco).
+  const arquivoA = [
+    tx({ fitid: 'X', description: 'COMPRA A', amountCents: -1000 }),
+    tx({ fitid: 'X', description: 'COMPRA B', amountCents: -2000 }),
+  ]
+
+  // Arquivo B do mês seguinte, com sobreposição: traz só a primeira delas, e
+  // agora 'X' aparece uma única vez.
+  const arquivoB = [
+    tx({ fitid: 'X', description: 'COMPRA A', amountCents: -1000 }),
+    tx({ fitid: 'Y', description: 'COMPRA C', amountCents: -3000 }),
+  ]
+
+  it('classifica a mesma linha de formas diferentes em cada arquivo', () => {
+    // Confirma a premissa do bug antes de testar a correção: se isto mudar,
+    // o teste abaixo passaria por motivo errado.
+    const [a1] = atribuirFingerprints(CONTA, arquivoA)
+    const [b1] = atribuirFingerprints(CONTA, arquivoB)
+
+    expect(a1.fingerprint).toMatch(/^h_/) // FITID repetido em A -> hash
+    expect(b1.fingerprint).toMatch(/^ofx_/) // FITID único em B -> FITID
+    expect(a1.fingerprint).not.toBe(b1.fingerprint)
+  })
+
+  it('mesmo assim não duplica a linha que os dois arquivos têm', () => {
+    const primeiro = atribuirFingerprints(CONTA, arquivoA)
+    const rodadaA = separarDuplicadas(primeiro, [])
+    expect(rodadaA.novas).toHaveLength(2)
+
+    // O que o banco guardou: a identidade escolhida de cada linha.
+    const gravados = rodadaA.novas.map((t) => t.fingerprint)
+
+    const segundo = atribuirFingerprints(CONTA, arquivoB)
+    const rodadaB = separarDuplicadas(segundo, gravados)
+
+    // 'COMPRA A' já existe e é reconhecida pelo alternativo. Só 'COMPRA C'
+    // entra. Antes da correção, entravam as duas.
+    expect(rodadaB.novas).toHaveLength(1)
+    expect(rodadaB.novas[0].description).toBe('COMPRA C')
+    expect(rodadaB.duplicadas).toHaveLength(1)
+    expect(rodadaB.duplicadas[0].description).toBe('COMPRA A')
   })
 })
 

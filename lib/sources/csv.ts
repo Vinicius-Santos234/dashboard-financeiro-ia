@@ -131,10 +131,10 @@ export const csvAdapter: SourceAdapter<CsvMapping> = {
   id: 'csv',
 
   async parse(input, mapping): Promise<ParseResult> {
-    const { data, meta } = Papa.parse<Record<string, string>>(texto(input), {
-      header: true,
-      skipEmptyLines: 'greedy',
-    })
+    const { data, meta, errors } = Papa.parse<Record<string, string>>(
+      texto(input),
+      { header: true, skipEmptyLines: 'greedy' }
+    )
 
     const colunas = meta.fields ?? []
     for (const obrigatoria of [
@@ -147,17 +147,68 @@ export const csvAdapter: SourceAdapter<CsvMapping> = {
       }
     }
 
-    const formato =
-      mapping.formatoData ??
-      detectDateFormat(data.map((l) => l[mapping.colunaData] ?? '')).formato
+    // Aspa não fechada não corrompe uma linha: ela engole as seguintes dentro
+    // do mesmo campo. Ou seja, o arquivo inteiro passa a não ter mais como ser
+    // dividido em linhas com segurança, e um relatório por linha mentiria.
+    // Por isso este caso recusa o arquivo em vez de virar `descartadas`.
+    const fatal = errors.find(
+      (e) => e.code === 'MissingQuotes' || e.code === 'UndetectableDelimiter'
+    )
+    if (fatal) {
+      throw new CsvInvalidoError(
+        fatal.code === 'MissingQuotes'
+          ? `há uma aspa não fechada por volta da linha ${(fatal.row ?? 0) + 2}, ` +
+            'e a partir dela não dá para saber onde cada linha termina'
+          : 'não foi possível identificar o separador de colunas'
+      )
+    }
+
+    const formato = (() => {
+      if (mapping.formatoData) return mapping.formatoData
+
+      const deteccao = detectDateFormat(
+        data.map((l) => l[mapping.colunaData] ?? '')
+      )
+
+      // `certeza: false` significa que todo dia e todo mês do arquivo são ≤ 12
+      // e nada desempata. Assumir dd/mm aqui trocaria dia por mês em silêncio:
+      // 04/05 entraria como 4 de maio num arquivo americano onde é 5 de abril.
+      // A detecção já sabia que não sabia; faltava alguém escutar.
+      if (!deteccao.certeza) {
+        throw new CsvInvalidoError(
+          'não dá para deduzir o formato das datas: todos os valores têm dia e ' +
+            'mês menores que 13. Informe `formatoData` no mapeamento.'
+        )
+      }
+
+      return deteccao.formato
+    })()
 
     const transactions: RawTransaction[] = []
     const descartadas: LinhaDescartada[] = []
+
+    // Erros por linha que não impedem delimitar o arquivo (campo a mais, campo
+    // a menos) entram em `descartadas` como qualquer outra perda — nunca somem.
+    const errosPorLinha = new Map<number, string>()
+    for (const e of errors) {
+      if (e.row === undefined) continue
+      errosPorLinha.set(e.row, e.message)
+    }
 
     data.forEach((linha, i) => {
       // +2: uma pela linha de cabeçalho, uma porque humano conta do 1.
       const numero = i + 2
       const bruta = Object.values(linha).join(' | ').slice(0, 120)
+
+      const erroDaLinha = errosPorLinha.get(i)
+      if (erroDaLinha) {
+        descartadas.push({
+          linha: numero,
+          conteudo: bruta,
+          motivo: `CSV malformado: ${erroDaLinha}`,
+        })
+        return
+      }
 
       const dataBruta = (linha[mapping.colunaData] ?? '').trim()
       const valorBruto = (linha[mapping.colunaValor] ?? '').trim()

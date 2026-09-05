@@ -108,12 +108,23 @@ export interface OpcoesGravacao {
 }
 
 /**
- * Grava o lote e atualiza os rollups dos meses tocados.
+ * Uma transação do Firestore aceita 500 operações. Aqui são, por lote:
+ * N leituras + N escritas + 1 leitura e 1 escrita do rollup. 200 cabe com
+ * folga e mantém a transação curta, o que reduz retentativa por contenção.
+ */
+const LOTE = 200
+
+/**
+ * Grava o lote **e** atualiza o rollup do mês na MESMA transação. Spec §4.5.
  *
- * `create()` em vez de `set()` é deliberado: se o documento já existe, a
- * escrita falha. É a deduplicação vindo da forma da árvore (§4.3) em vez de
- * uma constraint declarada — e é a segunda linha de defesa, já que
- * `separarDuplicadas` normalmente barra antes.
+ * A versão anterior gravava as transações num batch e só depois somava o
+ * rollup, em outra operação. Uma falha entre as duas deixava as transações
+ * gravadas e o agregado sem elas — e, pior, a reimportação encontrava as
+ * linhas como duplicadas, de modo que o rollup **nunca** as receberia. A
+ * divergência era permanente e silenciosa.
+ *
+ * O agrupamento por mês existe porque o rollup é por mês: cada transação do
+ * Firestore toca um único documento de agregado.
  */
 export async function gravarTransacoes(
   uid: string,
@@ -140,73 +151,91 @@ export async function gravarTransacoes(
     aiOptOut: false,
   })
 
-  // Só o que REALMENTE entrou pode somar no rollup. Somar o lote inteiro
-  // inflaria o gráfico a cada reimportação parcial — o mesmo estrago que a
-  // deduplicação existe para evitar, entrando por outra porta.
-  const gravadas: ComFingerprint[] = []
+  const porMes = new Map<string, ComFingerprint[]>()
+  for (const t of transacoes) {
+    const mes = mesDe(t.occurredOn)
+    const lista = porMes.get(mes) ?? []
+    lista.push(t)
+    porMes.set(mes, lista)
+  }
+
+  let gravadas = 0
   let jaExistiam = 0
 
-  // O batch do Firestore aceita 500 operações; 400 deixa margem.
-  for (let i = 0; i < transacoes.length; i += 400) {
-    const pedaco = transacoes.slice(i, i + 400)
-    const batch = adminDb.batch()
-
-    for (const t of pedaco) {
-      batch.create(col.doc(t.fingerprint), {
-        ...montar(t),
-        createdAt: FieldValue.serverTimestamp(),
-      })
-    }
-
-    try {
-      await batch.commit()
-      gravadas.push(...pedaco)
-    } catch {
-      // Um `create` que colide derruba o batch inteiro. Cai para uma por uma
-      // para que uma duplicata não custe as outras 399.
-      for (const t of pedaco) {
-        try {
-          await col
-            .doc(t.fingerprint)
-            .create({ ...montar(t), createdAt: FieldValue.serverTimestamp() })
-          gravadas.push(t)
-        } catch {
-          jaExistiam += 1
-        }
-      }
-    }
-  }
-
-  await somarNosRollups(
-    uid,
-    gravadas.map((t) => ({
-      month: mesDe(t.occurredOn),
-      amountCents: t.amountCents,
-      category: null,
-    }))
-  )
-
-  return { gravadas: gravadas.length, jaExistiam }
-}
-
-/** Aplica o delta de inserção em cada mês tocado, um `runTransaction` por mês. */
-async function somarNosRollups(uid: string, linhas: readonly LinhaAgregavel[]) {
-  const porMes = new Map<string, LinhaAgregavel[]>()
-  for (const l of linhas) {
-    const lista = porMes.get(l.month) ?? []
-    lista.push(l)
-    porMes.set(l.month, lista)
-  }
-
   for (const [mes, doMes] of porMes) {
-    const ref = adminDb.doc(p.rollup(uid, mes))
-    await adminDb.runTransaction(async (tx) => {
-      const atual = await tx.get(ref)
-      const base = atual.exists ? (atual.data() as Rollup) : rollupVazio(mes)
-      const novo = aplicarDelta(base, deltaDeInsercao(doMes))
-      tx.set(ref, { ...novo, updatedAt: FieldValue.serverTimestamp() })
-    })
+    const rollupRef = adminDb.doc(p.rollup(uid, mes))
+
+    for (let i = 0; i < doMes.length; i += LOTE) {
+      const pedaco = doMes.slice(i, i + LOTE)
+
+      const parcial = await adminDb.runTransaction(async (tx) => {
+        // Checa o fingerprint E os alternativos: a mesma transação pode estar
+        // gravada sob a outra forma de identidade, se um arquivo anterior a
+        // classificou de outro jeito (ComFingerprint.alternativos).
+        const ids = [
+          ...new Set(pedaco.flatMap((t) => [t.fingerprint, ...t.alternativos])),
+        ]
+
+        // No Firestore, TODA leitura vem antes de TODA escrita.
+        const [rollupSnap, ...docs] = await tx.getAll(
+          rollupRef,
+          ...ids.map((id) => col.doc(id))
+        )
+
+        const existentes = new Set(
+          docs.filter((d) => d.exists).map((d) => d.id)
+        )
+
+        // Duplicata é decidida por LEITURA, não por capturar exceção. A versão
+        // anterior fazia `catch { jaExistiam += 1 }`, que contava timeout e
+        // indisponibilidade como "já existia" — linhas nunca gravadas sumiam do
+        // relatório com o rótulo errado. Agora erro de infraestrutura sobe e
+        // derruba o import, que é o comportamento honesto.
+        const novas = pedaco.filter(
+          (t) =>
+            !existentes.has(t.fingerprint) &&
+            !t.alternativos.some((id) => existentes.has(id))
+        )
+
+        if (novas.length === 0) {
+          return { gravadas: 0, jaExistiam: pedaco.length }
+        }
+
+        const base = rollupSnap.exists
+          ? (rollupSnap.data() as Rollup)
+          : rollupVazio(mes)
+
+        const novo = aplicarDelta(
+          base,
+          deltaDeInsercao(
+            novas.map((t) => ({
+              month: mes,
+              amountCents: t.amountCents,
+              category: null,
+            }))
+          )
+        )
+
+        for (const t of novas) {
+          tx.create(col.doc(t.fingerprint), {
+            ...montar(t),
+            createdAt: FieldValue.serverTimestamp(),
+          })
+        }
+        tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+
+        return {
+          gravadas: novas.length,
+          jaExistiam: pedaco.length - novas.length,
+        }
+      })
+
+      gravadas += parcial.gravadas
+      jaExistiam += parcial.jaExistiam
+    }
   }
+
+  return { gravadas, jaExistiam }
 }
 
 /** Muda a categoria de uma transação e move o valor no rollup, atomicamente. */
@@ -255,24 +284,35 @@ export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
  *
  * É o botão de conserto para quando o incremental divergir — e a existência
  * dele é o que torna o cache aceitável. Um mês são ~100 documentos.
+ *
+ * Roda **dentro de uma transação** e não como leitura seguida de escrita. Sem
+ * isso, a ferramenta de conserto conseguia corromper: o recálculo lia 99
+ * transações, uma importação concorrente gravava a centésima e aplicava o
+ * delta dela, e então o recálculo gravava o agregado das 99 — apagando a
+ * centésima do gráfico. A transação do Firestore trava os documentos lidos
+ * pela query, então a escrita concorrente força a retentativa em vez de ser
+ * silenciosamente descartada.
  */
 export async function recalcularRollup(uid: string, mes: string): Promise<Rollup> {
-  const snap = await adminDb
+  const query = adminDb
     .collection(p.transacoes(uid))
     .where('month', '==', mes)
-    .get()
 
-  const linhas: LinhaAgregavel[] = snap.docs.map((d) => {
-    const t = d.data() as TransactionDoc
-    return { month: t.month, amountCents: t.amountCents, category: t.category }
+  const rollupRef = adminDb.doc(p.rollup(uid, mes))
+
+  return await adminDb.runTransaction(async (tx) => {
+    const snap = await tx.get(query)
+
+    const linhas: LinhaAgregavel[] = snap.docs.map((d) => {
+      const t = d.data() as TransactionDoc
+      return { month: t.month, amountCents: t.amountCents, category: t.category }
+    })
+
+    const novo = calcularRollup(mes, linhas)
+    tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+
+    return novo
   })
-
-  const novo = calcularRollup(mes, linhas)
-  await adminDb
-    .doc(p.rollup(uid, mes))
-    .set({ ...novo, updatedAt: FieldValue.serverTimestamp() })
-
-  return novo
 }
 
 export async function listarTransacoesDoMes(uid: string, mes: string) {

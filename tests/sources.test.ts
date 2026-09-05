@@ -214,3 +214,47 @@ describe('inspecionar — o que alimenta a tela de mapeamento', () => {
     expect(() => inspecionar('')).toThrow(CsvInvalidoError)
   })
 })
+
+describe('csvAdapter — os achados do Codex', () => {
+  const base = {
+    colunaData: 'Data',
+    colunaDescricao: 'Historico',
+    colunaValor: 'Valor',
+  }
+
+  it('3.1 — recusa o arquivo quando uma aspa não fechada engole linhas', async () => {
+    // Aspa aberta e não fechada não estraga uma linha: ela absorve as
+    // seguintes dentro do mesmo campo. A partir dali não dá para saber onde
+    // cada linha termina, então relatar "descartadas" por linha seria mentira.
+    // A versão anterior descartava o array `errors` do Papa Parse inteiro e
+    // importava os dados parciais em silêncio.
+    await expect(
+      csvAdapter.parse(fixture('aspa-quebrada.csv'), base)
+    ).rejects.toThrow(CsvInvalidoError)
+
+    await expect(
+      csvAdapter.parse(fixture('aspa-quebrada.csv'), base)
+    ).rejects.toThrow(/aspa não fechada/)
+  })
+
+  it('3.2 — recusa data ambígua em vez de chutar dd/mm', async () => {
+    // Todos os dias e meses do arquivo são ≤ 12, então nada desempata.
+    // `detectDateFormat` já devolvia `certeza: false`; faltava alguém escutar.
+    // Importar como dd/mm trocaria 04/05 (5 de abril, no formato americano)
+    // por 4 de maio, sem erro e sem descarte.
+    await expect(
+      csvAdapter.parse(fixture('data-ambigua.csv'), base)
+    ).rejects.toThrow(/não dá para deduzir o formato das datas/)
+  })
+
+  it('3.2 — com o formato informado, o mesmo arquivo importa normalmente', async () => {
+    const r = await csvAdapter.parse(fixture('data-ambigua.csv'), {
+      ...base,
+      formatoData: 'mm/dd/yyyy',
+    })
+
+    expect(r.transactions).toHaveLength(2)
+    expect(r.transactions[0].occurredOn).toBe('2026-04-05')
+    expect(r.transactions[1].occurredOn).toBe('2026-06-07')
+  })
+})
