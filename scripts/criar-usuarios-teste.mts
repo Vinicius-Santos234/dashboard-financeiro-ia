@@ -19,13 +19,13 @@ const senha = () => randomBytes(18).toString('base64url')
 
 async function garantir(email: string, novaSenha: string) {
   try {
-    const existente = await adminAuth.getUserByEmail(email)
+    const existente = await adminAuth().getUserByEmail(email)
     // Reaproveita o uid e redefine a senha, para o teste funcionar mesmo se
     // o .env.local tiver sido perdido entre uma rodada e outra.
-    await adminAuth.updateUser(existente.uid, { password: novaSenha })
+    await adminAuth().updateUser(existente.uid, { password: novaSenha })
     return { uid: existente.uid, criado: false }
   } catch {
-    const novo = await adminAuth.createUser({ email, password: novaSenha })
+    const novo = await adminAuth().createUser({ email, password: novaSenha })
     return { uid: novo.uid, criado: true }
   }
 }

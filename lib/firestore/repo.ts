@@ -42,7 +42,7 @@ export interface TransactionDoc {
 }
 
 export async function garantirUsuario(uid: string, email: string | null) {
-  await adminDb.doc(p.usuario(uid)).set(
+  await adminDb().doc(p.usuario(uid)).set(
     { email, criadoEm: FieldValue.serverTimestamp() },
     { merge: true }
   )
@@ -54,7 +54,7 @@ export async function criarConta(
   uid: string,
   dados: { name: string; institution?: string | null; kind: TipoConta }
 ): Promise<string> {
-  const ref = adminDb.collection(p.contas(uid)).doc()
+  const ref = adminDb().collection(p.contas(uid)).doc()
   await ref.set({
     name: dados.name,
     institution: dados.institution ?? null,
@@ -65,7 +65,7 @@ export async function criarConta(
 }
 
 export async function listarContas(uid: string) {
-  const snap = await adminDb.collection(p.contas(uid)).get()
+  const snap = await adminDb().collection(p.contas(uid)).get()
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
 }
 
@@ -82,12 +82,12 @@ export async function fingerprintsExistentes(
   fingerprints: readonly string[]
 ): Promise<Set<string>> {
   const achados = new Set<string>()
-  const col = adminDb.collection(p.transacoes(uid))
+  const col = adminDb().collection(p.transacoes(uid))
 
   for (let i = 0; i < fingerprints.length; i += 30) {
     const pedaco = fingerprints.slice(i, i + 30)
     const refs = pedaco.map((fp) => col.doc(fp))
-    const docs = await adminDb.getAll(...refs)
+    const docs = await adminDb().getAll(...refs)
     for (const d of docs) if (d.exists) achados.add(d.id)
   }
 
@@ -133,7 +133,7 @@ export async function gravarTransacoes(
 ): Promise<ResultadoGravacao> {
   if (transacoes.length === 0) return { gravadas: 0, jaExistiam: 0 }
 
-  const col = adminDb.collection(p.transacoes(uid))
+  const col = adminDb().collection(p.transacoes(uid))
 
   const montar = (t: ComFingerprint): TransactionDoc => ({
     accountId: opcoes.accountId,
@@ -163,12 +163,12 @@ export async function gravarTransacoes(
   let jaExistiam = 0
 
   for (const [mes, doMes] of porMes) {
-    const rollupRef = adminDb.doc(p.rollup(uid, mes))
+    const rollupRef = adminDb().doc(p.rollup(uid, mes))
 
     for (let i = 0; i < doMes.length; i += LOTE) {
       const pedaco = doMes.slice(i, i + LOTE)
 
-      const parcial = await adminDb.runTransaction(async (tx) => {
+      const parcial = await adminDb().runTransaction(async (tx) => {
         // Checa o fingerprint E os alternativos: a mesma transação pode estar
         // gravada sob a outra forma de identidade, se um arquivo anterior a
         // classificou de outro jeito (ComFingerprint.alternativos).
@@ -246,16 +246,16 @@ export async function recategorizar(
   origem: 'ai' | 'rule' | 'user',
   confidence: number | null = null
 ): Promise<void> {
-  const txRef = adminDb.doc(p.transacao(uid, fingerprint))
+  const txRef = adminDb().doc(p.transacao(uid, fingerprint))
 
-  await adminDb.runTransaction(async (t) => {
+  await adminDb().runTransaction(async (t) => {
     const snap = await t.get(txRef)
     if (!snap.exists) throw new Error(`Transação ${fingerprint} não existe.`)
 
     const dados = snap.data() as TransactionDoc
     if (dados.category === para) return
 
-    const rollupRef = adminDb.doc(p.rollup(uid, dados.month))
+    const rollupRef = adminDb().doc(p.rollup(uid, dados.month))
     const rollupSnap = await t.get(rollupRef)
     const base = rollupSnap.exists
       ? (rollupSnap.data() as Rollup)
@@ -275,7 +275,7 @@ export async function recategorizar(
 }
 
 export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
-  const snap = await adminDb.doc(p.rollup(uid, mes)).get()
+  const snap = await adminDb().doc(p.rollup(uid, mes)).get()
   return snap.exists ? (snap.data() as Rollup) : rollupVazio(mes)
 }
 
@@ -294,13 +294,13 @@ export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
  * silenciosamente descartada.
  */
 export async function recalcularRollup(uid: string, mes: string): Promise<Rollup> {
-  const query = adminDb
+  const query = adminDb()
     .collection(p.transacoes(uid))
     .where('month', '==', mes)
 
-  const rollupRef = adminDb.doc(p.rollup(uid, mes))
+  const rollupRef = adminDb().doc(p.rollup(uid, mes))
 
-  return await adminDb.runTransaction(async (tx) => {
+  return await adminDb().runTransaction(async (tx) => {
     const snap = await tx.get(query)
 
     const linhas: LinhaAgregavel[] = snap.docs.map((d) => {
@@ -316,7 +316,7 @@ export async function recalcularRollup(uid: string, mes: string): Promise<Rollup
 }
 
 export async function listarTransacoesDoMes(uid: string, mes: string) {
-  const snap = await adminDb
+  const snap = await adminDb()
     .collection(p.transacoes(uid))
     .where('month', '==', mes)
     .orderBy('occurredOn', 'desc')
@@ -326,7 +326,7 @@ export async function listarTransacoesDoMes(uid: string, mes: string) {
 }
 
 export async function contarTransacoes(uid: string): Promise<number> {
-  const snap = await adminDb.collection(p.transacoes(uid)).count().get()
+  const snap = await adminDb().collection(p.transacoes(uid)).count().get()
   return snap.data().count
 }
 
@@ -339,5 +339,5 @@ export async function contarTransacoes(uid: string): Promise<number> {
  * "apagamos a conta" que não apaga nada.
  */
 export async function apagarTudoDoUsuario(uid: string): Promise<void> {
-  await adminDb.recursiveDelete(adminDb.doc(p.usuario(uid)))
+  await adminDb().recursiveDelete(adminDb().doc(p.usuario(uid)))
 }

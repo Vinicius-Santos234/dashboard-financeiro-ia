@@ -24,9 +24,9 @@ export type Sessao = { uid: string; email: string | null }
 export async function criarSessao(idToken: string): Promise<void> {
   // `checkRevoked` na verificação: se a conta foi desativada ou o token
   // revogado entre o login e esta chamada, não vira sessão.
-  await adminAuth.verifyIdToken(idToken, true)
+  await adminAuth().verifyIdToken(idToken, true)
 
-  const cookie = await adminAuth.createSessionCookie(idToken, {
+  const cookie = await adminAuth().createSessionCookie(idToken, {
     expiresIn: DURACAO_MS,
   })
 
@@ -53,7 +53,7 @@ export async function lerSessao(): Promise<Sessao | null> {
   if (!cookie) return null
 
   try {
-    const claims = await adminAuth.verifySessionCookie(cookie, true)
+    const claims = await adminAuth().verifySessionCookie(cookie, true)
     return { uid: claims.uid, email: claims.email ?? null }
   } catch {
     // Expirado, revogado ou adulterado — os três dão no mesmo: sem sessão.
@@ -80,10 +80,10 @@ export async function encerrarSessao(): Promise<void> {
 
   if (cookie) {
     try {
-      const claims = await adminAuth.verifySessionCookie(cookie)
+      const claims = await adminAuth().verifySessionCookie(cookie)
       // Revoga no servidor, não só apaga o cookie: sair numa máquina precisa
       // derrubar a sessão, não apenas esquecê-la nesta.
-      await adminAuth.revokeRefreshTokens(claims.sub)
+      await adminAuth().revokeRefreshTokens(claims.sub)
     } catch {
       // Cookie já inválido. Apagar mesmo assim.
     }
