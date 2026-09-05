@@ -63,7 +63,7 @@ permanente.
 | E1 | Provedor | **Pluggy** | Único com acesso gratuito permanente à API (Meu Pluggy). Belvo e Tecnospeed só têm sandbox de teste |
 | E2 | Credenciais reais | **Meu Pluggy**, contas do dono | Grátis, sem expiração, sem limite de conexões |
 | E3 | Testes automatizados | **Sandbox da Pluggy** | Dado fictício em formato real; não gasta requisição de produção |
-| E4 | Quem pode conectar | **Só a conta do dono**, por allowlist | Ver §7 — não é escolha de produto, é a licença |
+| E4 | Quem pode conectar | Quem tiver o **direito** `openFinance` no perfil | Ver §7. Hoje só o dono tem; amanhã é um campo, não um deploy |
 | E5 | Sincronização | **Sob demanda + webhook**, nunca polling | Cada leitura da API é uma requisição cobrada |
 | E6 | Identidade da transação | `id` da Pluggy, como o FITID do OFX | Mesma família do que já existe (§4.3 da 001) |
 | E7 | Onde o segredo mora | Só no servidor, nunca no cliente | O `connectToken` do widget é emitido pelo servidor e é de vida curta |
@@ -193,16 +193,84 @@ contornar com engenharia:
 
 Portanto:
 
-- **A conexão de Open Finance é liberada apenas para a conta do dono**, por uma
-  allowlist de uid em variável de ambiente. Toda outra conta vê a tela com uma
-  explicação honesta do porquê.
+- **A conexão de Open Finance exige o direito `openFinance` no perfil do
+  usuário.** Hoje só a conta do dono tem. Toda outra vê a tela com a explicação
+  honesta do porquê — não um erro genérico, e não a tela escondida.
 - **A conta demo pública nunca conecta banco nenhum.** Ela segue com o seed
   derivado, e o README explica que Open Finance está implementado e é
-  demonstrado com dado derivado — porque a licença gratuita é pessoal.
+  demonstrado com dado derivado, porque a licença gratuita é pessoal.
 
 Isso é chato de escrever e é o que separa "projeto de portfólio honesto" de
 "projeto que quebra os termos de um fornecedor para ficar bonito na
 apresentação". A limitação declarada vale mais que a demonstração fingida.
+
+### Por que um direito, e não uma allowlist de uid
+
+Parece a mesma coisa hoje — a lista teria um nome só. A diferença aparece no
+dia em que o Open Finance for liberado para outra pessoa, seja num plano pago,
+seja num convite:
+
+```ts
+// allowlist: quem pode é decidido no código, e mudar exige deploy
+const PERMITIDOS = process.env.OPEN_FINANCE_UIDS?.split(',')
+
+// direito: quem pode é um dado do usuário, e mudar é uma escrita
+users/{uid}  →  { direitos: { openFinance: true } }
+```
+
+O código fica igual de simples e o portão passa a ser **estado**, não build. É a
+diferença entre "amanhã eu mudo uma variável e redeployo" e "amanhã eu marco um
+campo" — e, se este projeto virar produto, entre reescrever a autorização e já
+ter a autorização pronta.
+
+O direito é escrito **só pelo servidor**, como tudo o mais (§4.4 da 001): se o
+cliente pudesse marcá-lo, o portão não existiria.
+
+---
+
+## 7.1 O app continua aberto ao público — decisão, e o que ela obriga
+
+O cadastro segue **aberto**: qualquer pessoa cria conta, importa o próprio
+OFX/CSV, categoriza e vê os gráficos. Só o Open Finance é restrito.
+
+Isso foi decidido sabendo do custo: **quem sobe o próprio extrato aqui está
+confiando dado financeiro real a um projeto pessoal**, e isso faz de quem
+mantém o app um controlador de dado sensível de terceiro. Aceitar essa
+responsabilidade é uma escolha legítima — mas ela deixa de ser uma frase de
+boas intenções e vira trabalho com prazo.
+
+O que passa a ser obrigatório **porque o app é aberto**, e entra como etapa:
+
+- **Aviso claro no cadastro** de que é projeto pessoal, sem garantia de
+  disponibilidade, e que o dado pode ser apagado a qualquer momento.
+- **Política de retenção escrita e cumprida**: conta sem acesso por N meses é
+  apagada, com aviso por e-mail antes. Sem isso, "guardo para sempre" vira a
+  política de fato.
+- **Exportar os próprios dados** antes de excluir a conta. O direito de
+  portabilidade é do titular, e hoje o app só oferece apagar.
+- **Um canal de contato** para pedido de titular. Sem endereço para reclamar,
+  não há como atender.
+
+> A exclusão de conta já existe e funciona (`recursiveDelete` sob
+> `users/{uid}`, §7.4 da 001). O que falta é o resto do ciclo: avisar, reter por
+> prazo definido, e deixar sair com os dados na mão.
+
+---
+
+## 7.2 A porta que fica aberta para o futuro
+
+A ideia de transformar isto em produto pago não está no escopo desta spec, e
+não deve puxar nenhuma decisão para cá. Mas duas escolhas já feitas custam
+zero hoje e evitam reescrita depois:
+
+- **O direito por usuário** (§7) — o dia em que alguém pagar por Open Finance,
+  o portão já existe.
+- **O `SyncAdapter`** (§4) — trocar o Meu Pluggy pelo plano pago da Pluggy é
+  trocar credencial, não implementação. E um provedor diferente é uma classe
+  nova atrás da mesma interface.
+
+Nada além disso. Desenhar para um produto que talvez não exista é o jeito mais
+comum de não terminar o que existe.
 
 ---
 
@@ -213,7 +281,7 @@ apresentação". A limitação declarada vale mais que a demonstração fingida.
 | Iniciação de pagamento | Outro produto, outro preço, e o app não movimenta dinheiro |
 | Investimentos | Continua fora, como na 001 |
 | Belvo ou Tecnospeed como segundo provedor | O `SyncAdapter` deixa a porta aberta; sem motivo para abrir agora |
-| Conexão para outros usuários | Ver §7. Só com plano pago |
+| Conexão para outros usuários | Ver §7. Exige plano pago; o direito por usuário deixa a porta pronta |
 | Sincronização automática por agendamento | Webhook cobre o caso real. Cron seria requisição paga a cada disparo |
 
 ---
@@ -243,12 +311,15 @@ apresentação". A limitação declarada vale mais que a demonstração fingida.
   repetido já ensinou a temer.
 
 ### F4 — Conexão e widget
-- [ ] `/api/pluggy/token` emite `connectToken` só para uid na allowlist
+- [ ] `/api/pluggy/token` emite `connectToken` só para quem tem o direito
+      `openFinance`
 - [ ] Tela lista conexões com status legível
 - **Aceite:** o Client Secret **não aparece** em nenhum arquivo do bundle
-  servido. Verificado como em §10, buscando nos chunks.
-- **Aceite:** uma conta fora da allowlist recebe 403 com a explicação de §7, não
-  um erro genérico.
+  servido — verificado buscando nos chunks JS servidos, não na configuração.
+- **Aceite:** uma conta sem o direito recebe 403 com a explicação de §7, não um
+  erro genérico.
+- **Aceite:** o direito é ignorado quando vem do cliente. Uma requisição que
+  tente informá-lo é recusada.
 
 ### F5 — Webhook
 - [ ] Assinatura verificada; evento sem assinatura válida é recusado
@@ -265,6 +336,19 @@ apresentação". A limitação declarada vale mais que a demonstração fingida.
 - **Aceite:** o dashboard soma arquivo e Open Finance na mesma pizza, sem
   duplicar nada.
 
+### F7 — O que o app aberto ao público obriga (§7.1)
+- [ ] Aviso no cadastro: projeto pessoal, sem garantia, dado apagável
+- [ ] Exportar os próprios dados em JSON antes de excluir a conta
+- [ ] Política de retenção escrita no README e implementada
+- [ ] Canal de contato para pedido de titular
+- **Aceite:** dá para sair do app **com os dados na mão**, e não só apagá-los.
+- **Aceite:** o texto do aviso não promete nada que o app não cumpra.
+
+> Esta etapa não tem relação técnica com Open Finance e está aqui de propósito:
+> ela é a consequência de manter o cadastro aberto, e adiar isso para "depois"
+> é como a dívida de privacidade costuma nascer.
+
+
 ---
 
 ## 10. Riscos
@@ -272,7 +356,7 @@ apresentação". A limitação declarada vale mais que a demonstração fingida.
 | Risco | Mitigação |
 |---|---|
 | Trial de 14 dias acabar no meio do desenvolvimento | O Meu Pluggy é a credencial principal; o trial não é usado |
-| Uso do Meu Pluggy ser interpretado como comercial | Allowlist de §7, e o README dizendo o que é |
+| Uso do Meu Pluggy ser interpretado como comercial | Direito por usuário (§7), README dizendo o que é, e a demo sem conexão nenhuma |
 | Cada leitura ser cobrada | `ultimaSync` sempre; webhook em vez de polling; sem cron |
 | A Pluggy mudar de política de gratuidade | O `SyncAdapter` isola o provedor. Se cair, o app volta a ser OFX/CSV — que continua funcionando |
 | Reautenticação periódica do Open Finance | Status na conexão e aviso na tela; o regulado exige renovação de consentimento |
@@ -287,6 +371,8 @@ apresentação". A limitação declarada vale mais que a demonstração fingida.
       reais — muda a F1, e é a primeira coisa a verificar
 - [ ] Ler os termos do Meu Pluggy na íntegra antes da F4, para o texto de §7 do
       README citar o que eles dizem, e não o que eu entendi
+- [ ] Definir o prazo de retenção de conta inativa (§7.1) — é um número que
+      precisa ser escolhido, não deduzido
 
 ---
 
