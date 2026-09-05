@@ -36,6 +36,10 @@ export const insights = (uid: string) => `users/${uid}/insights`
 /** `periodo` é sempre `YYYY-MM`. */
 export const insight = (uid: string, periodo: string) => `${insights(uid)}/${periodo}`
 
+export const cotas = (uid: string) => `users/${uid}/quota`
+/** `dia` e sempre YYYY-MM-DD. */
+export const cota = (uid: string, dia: string) => `${cotas(uid)}/${dia}`
+
 export const rollups = (uid: string) => `users/${uid}/rollups`
 export const rollup = (uid: string, mes: string) => `${rollups(uid)}/${mes}`
 

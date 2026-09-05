@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { CATEGORIAS } from '@/lib/domain/categories'
 import { normalizarPadrao } from '@/lib/domain/rules'
-import { exigirSessao } from '@/lib/firebase/session'
+import { exigirSessaoGravavel } from '@/lib/firebase/session'
 import {
   definirAiOptOut,
   obterTransacao,
@@ -24,7 +24,7 @@ export async function corrigirCategoria(formData: FormData): Promise<void> {
     category: formData.get('category'),
     pattern: formData.get('pattern') || undefined,
   })
-  const { uid } = await exigirSessao()
+  const { uid } = await exigirSessaoGravavel('Corrigir categoria')
   const transacao = await obterTransacao(uid, entrada.fingerprint)
   if (!transacao) throw new Error('Transação não encontrada.')
   if (transacao.amountCents >= 0 && entrada.category !== 'receita') {
@@ -53,7 +53,7 @@ export async function alterarOptOut(formData: FormData): Promise<void> {
     fingerprint: formData.get('fingerprint'),
     optOut: formData.get('optOut'),
   })
-  const { uid } = await exigirSessao()
+  const { uid } = await exigirSessaoGravavel('Alterar o envio à IA')
   await definirAiOptOut(uid, entrada.fingerprint, entrada.optOut === 'true')
   revalidatePath('/transacoes')
   revalidatePath('/dashboard')

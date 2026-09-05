@@ -1,4 +1,5 @@
 import 'server-only'
+import { createHash } from 'node:crypto'
 import { FieldValue } from 'firebase-admin/firestore'
 import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
@@ -440,6 +441,24 @@ export async function listarRegras(uid: string): Promise<RegraCategoria[]> {
   return snap.docs.map((d) => d.data() as RegraCategoria)
 }
 
+/**
+ * Id do documento de uma regra.
+ *
+ * `p.idSeguro` sozinho colide: ele mapeia `.`, `/`, `#`, `$`, `[` e `]` todos
+ * para `_`, então "MERCADO.X" e "MERCADO/X" cairiam no mesmo documento — e uma
+ * regra sobrescreveria a outra em silêncio, mudando a categoria de transações
+ * que nada tinham a ver. O sufixo de hash separa os dois casos, e o prefixo
+ * legível continua ajudando quem abre o console do Firestore.
+ */
+function idDaRegra(padraoNormalizado: string): string {
+  const legivel = p.idSeguro(padraoNormalizado).slice(0, 60)
+  const hash = createHash('sha256')
+    .update(padraoNormalizado, 'utf8')
+    .digest('hex')
+    .slice(0, 10)
+  return `${legivel}_${hash}`
+}
+
 export async function salvarRegra(
   uid: string,
   pattern: string,
@@ -448,7 +467,7 @@ export async function salvarRegra(
   const normalizado = normalizarPadrao(pattern)
   if (normalizado.length < 3) throw new Error('O padrão precisa ter ao menos 3 caracteres.')
 
-  const ref = adminDb().doc(p.regra(uid, p.idSeguro(normalizado)))
+  const ref = adminDb().doc(p.regra(uid, idDaRegra(normalizado)))
   await adminDb().runTransaction(async (tx) => {
     const atual = await tx.get(ref)
     tx.set(
@@ -473,13 +492,30 @@ export async function incrementarHitsRegras(
   for (const padrao of padroes) contagem.set(padrao, (contagem.get(padrao) ?? 0) + 1)
   if (contagem.size === 0) return
 
+  // `set` com merge, e não `update`: `update` falha quando o documento não
+  // existe e derruba o batch INTEIRO. Como isto roda depois de
+  // `aplicarCategorias`, uma regra apagada noutra aba faria a rota responder
+  // 502 dizendo "não categorizadas" — com as categorias já gravadas.
   const batch = adminDb().batch()
   for (const [padrao, hits] of contagem) {
-    batch.update(adminDb().doc(p.regra(uid, p.idSeguro(padrao))), {
-      hits: FieldValue.increment(hits),
-    })
+    batch.set(
+      adminDb().doc(p.regra(uid, idDaRegra(padrao))),
+      { hits: FieldValue.increment(hits) },
+      { merge: true }
+    )
   }
-  await batch.commit()
+
+  // E mesmo assim, engolindo a falha: contador de uso é telemetria. O trabalho
+  // de verdade já foi feito, e derrubar a resposta por causa dele seria mentir
+  // sobre o resultado.
+  try {
+    await batch.commit()
+  } catch (erro) {
+    console.error(
+      'Falha ao contabilizar hits de regras:',
+      erro instanceof Error ? erro.message : 'erro desconhecido'
+    )
+  }
 }
 
 export async function definirAiOptOut(

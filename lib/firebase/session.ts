@@ -1,6 +1,7 @@
 import 'server-only'
 import { cookies } from 'next/headers'
 import { adminAuth } from './admin'
+import { ContaDemoError, ehEmailDemo } from '@/lib/domain/demo'
 
 /**
  * Sessão por cookie httpOnly.
@@ -18,7 +19,12 @@ import { adminAuth } from './admin'
 const NOME = 'sessao'
 const DURACAO_MS = 60 * 60 * 24 * 5 * 1000 // 5 dias
 
-export type Sessao = { uid: string; email: string | null }
+export type Sessao = {
+  uid: string
+  email: string | null
+  /** Conta pública de demonstração: pode ler tudo, não pode escrever nada. */
+  demo: boolean
+}
 
 /** Troca o ID token do cliente por um cookie de sessão. */
 export async function criarSessao(idToken: string): Promise<void> {
@@ -54,7 +60,8 @@ export async function lerSessao(): Promise<Sessao | null> {
 
   try {
     const claims = await adminAuth().verifySessionCookie(cookie, true)
-    return { uid: claims.uid, email: claims.email ?? null }
+    const email = claims.email ?? null
+    return { uid: claims.uid, email, demo: ehEmailDemo(email) }
   } catch {
     // Expirado, revogado ou adulterado — os três dão no mesmo: sem sessão.
     return null
@@ -71,6 +78,19 @@ export async function lerSessao(): Promise<Sessao | null> {
 export async function exigirSessao(): Promise<Sessao> {
   const sessao = await lerSessao()
   if (!sessao) throw new Error('Sem sessão.')
+  return sessao
+}
+
+/**
+ * A sessão, e recusa se for a conta demo.
+ *
+ * Toda rota ou action que ESCREVE usa esta, e não `exigirSessao`. A diferença
+ * está no nome de propósito: quem escrever uma rota nova e chamar a errada
+ * está abrindo a demo para escrita, e isso precisa ser visível na chamada.
+ */
+export async function exigirSessaoGravavel(acao?: string): Promise<Sessao> {
+  const sessao = await exigirSessao()
+  if (sessao.demo) throw new ContaDemoError(acao)
   return sessao
 }
 

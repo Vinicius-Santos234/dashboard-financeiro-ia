@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import { exigirSessao } from '@/lib/firebase/session'
+import { ContaDemoError } from '@/lib/domain/demo'
 import {
   lerArquivo,
   formatoPeloNome,
@@ -64,9 +65,15 @@ function erroDeLeitura(erro: unknown): string | null {
  * de mapeamento, sem gravar nada. É o que alimenta a tela de mapeamento de CSV.
  */
 export async function POST(request: Request) {
+  // A inspeção não grava nada, então a conta demo pode usá-la e ver como a
+  // tela de mapeamento funciona. O import de verdade é recusado mais abaixo,
+  // depois de sabermos se é inspeção ou gravação.
   let uid: string
+  let demo: boolean
   try {
-    ;({ uid } = await exigirSessao())
+    const sessao = await exigirSessao()
+    uid = sessao.uid
+    demo = sessao.demo
   } catch {
     return NextResponse.json({ erro: 'Sem sessão.' }, { status: 401 })
   }
@@ -119,6 +126,13 @@ export async function POST(request: Request) {
       if (msg) return NextResponse.json({ erro: msg }, { status: 422 })
       throw erro
     }
+  }
+
+  if (demo) {
+    return NextResponse.json(
+      { erro: new ContaDemoError('A importação de extratos').message },
+      { status: 403 }
+    )
   }
 
   let entrada: EntradaImport
