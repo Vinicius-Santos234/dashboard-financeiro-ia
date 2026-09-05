@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Fixtures sao dado de teste, nao codigo: precisam voltar do clone byte a
+# byte. cartao.ofx e windows-1252 de proposito, e o teste que prova que o
+# decodificador funciona depende dos bytes exatos.
+tests/fixtures/** -text

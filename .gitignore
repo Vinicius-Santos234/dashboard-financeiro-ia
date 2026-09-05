@@ -45,3 +45,4 @@ next-env.d.ts
 tests/fixtures/reais/
 *.ofx
 *.OFX
+!tests/fixtures/derivadas/*.ofx
