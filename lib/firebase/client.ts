@@ -1,6 +1,5 @@
 import { initializeApp, getApps, getApp, type FirebaseOptions } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
-import { getFirestore } from 'firebase/firestore'
 
 /**
  * SDK cliente. Estas chaves sao publicas por desenho — o Firebase nao as trata
@@ -18,4 +17,7 @@ const config: FirebaseOptions = {
 
 export const firebaseApp = getApps().length ? getApp() : initializeApp(config)
 export const auth = getAuth(firebaseApp)
-export const db = getFirestore(firebaseApp)
+// Nao existe `db` de cliente de proposito: as firestore.rules negam TODA
+// escrita do cliente, e as leituras acontecem em Server Component. Exportar
+// um handle daqui convidaria a primeira escrita direta — que quebraria o
+// rollup em silencio, porque o cliente nao sabe manter a invariante.

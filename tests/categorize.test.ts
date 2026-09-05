@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { categorizarTransacoes, MAX_LOTES, TAMANHO_LOTE } from '@/lib/llm/categorize'
+import { categorizarTransacoes, MAX_LOTES, TAMANHO_LOTE, planejarCategorizacao } from '@/lib/llm/categorize'
 import type { LLMProvider } from '@/lib/llm/provider'
 import type { InsightBody } from '@/lib/llm/schema'
 
@@ -39,7 +39,7 @@ describe('categorizarTransacoes', () => {
       transacao(i, `IFOOD CPF 123.456.789-09 PEDIDO ${123456 + i}`)
     )
 
-    const resultado = await categorizarTransacoes(entrada, [], provider)
+    const resultado = await categorizarTransacoes(planejarCategorizacao(entrada, []), provider)
 
     expect(provider.chamadas.map((c) => c.length)).toEqual([50, 1])
     expect(provider.chamadas[0][0]).toEqual({
@@ -54,14 +54,18 @@ describe('categorizarTransacoes', () => {
 
   it('aplica regra e opt-out sem chamar a IA', async () => {
     const provider = new ProviderFake()
-    const resultado = await categorizarTransacoes(
+    const plano = planejarCategorizacao(
       [
         transacao(1, 'UBER TRIP'),
         { ...transacao(2, 'CLINICA SENSIVEL'), aiOptOut: true },
       ],
-      [{ pattern: 'UBER', category: 'transporte', hits: 2 }],
-      provider
+      [{ pattern: 'UBER', category: 'transporte', hits: 2 }]
     )
+
+    // O plano já sabe que nada vai à IA — e é esse número que a cota cobra.
+    expect(plano.lotes).toBe(0)
+
+    const resultado = await categorizarTransacoes(plano, provider)
 
     expect(provider.chamadas).toHaveLength(0)
     expect(resultado[0]).toMatchObject({ category: 'transporte', categorySource: 'rule' })
@@ -71,8 +75,10 @@ describe('categorizarTransacoes', () => {
   it('classifica entradas como receita sem consumir tokens', async () => {
     const provider = new ProviderFake()
     const [resultado] = await categorizarTransacoes(
-      [{ ...transacao(1, 'SALARIO EMPRESA'), amountCents: 320000 }],
-      [],
+      planejarCategorizacao(
+        [{ ...transacao(1, 'SALARIO EMPRESA'), amountCents: 320000 }],
+        []
+      ),
       provider
     )
     expect(provider.chamadas).toHaveLength(0)
@@ -86,15 +92,16 @@ describe('categorizarTransacoes', () => {
       { id: 't_01', category: 'categoria-inventada', confidence: 8 },
     ]
 
-    const [resultado] = await categorizarTransacoes([transacao(1)], [], provider)
+    const [resultado] = await categorizarTransacoes(planejarCategorizacao([transacao(1)], []), provider)
     expect(resultado).toMatchObject({ category: 'outros', confidence: 0, categorySource: 'ai' })
   })
 
-  it('recusa mais de vinte lotes', async () => {
-    const provider = new ProviderFake()
+  it('recusa mais de vinte lotes, antes de chamar', () => {
     const entrada = Array.from({ length: TAMANHO_LOTE * MAX_LOTES + 1 }, (_, i) =>
       transacao(i)
     )
-    await expect(categorizarTransacoes(entrada, [], provider)).rejects.toThrow(/limite/)
+    // O teto agora é recusado no PLANEJAMENTO, antes de qualquer chamada —
+    // que é onde ele deve morar: recusar depois já teria custado dinheiro.
+    expect(() => planejarCategorizacao(entrada, [])).toThrow(/limite/)
   })
 })

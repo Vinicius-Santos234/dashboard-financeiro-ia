@@ -2,13 +2,32 @@ rules_version = '2';
 
 // Security Rules — spec §4.4.
 //
-// ATENÇÃO AO LIMITE, e ele não está escondido em lugar nenhum: estas regras
-// valem para o SDK **cliente**. O Admin SDK, usado nos Route Handlers, passa
-// por cima de tudo aqui. O que protege o caminho do servidor é a árvore de
-// caminhos em lib/firestore/paths.ts, não este arquivo.
+// ============================================================================
+// O CLIENTE NÃO ESCREVE. NADA. EM LUGAR NENHUM.
+// ============================================================================
 //
-// Dizer "as Security Rules protegem o sistema" seria falso pela metade — que
-// é a pior metade.
+// Toda escrita passa pelo servidor (Route Handlers e Server Actions com o Admin
+// SDK), que mantém invariantes que o cliente desconhece — sobretudo o rollup
+// mensal, atualizado na MESMA transação da transação financeira.
+//
+// Antes desta versão, as regras diziam `allow create, update, delete: if
+// dono(uid)`. A escrita do app já ia toda pelo servidor, então na prática
+// ninguém usava aquele caminho — mas ele estava aberto, e por ele um usuário
+// autenticado gravava direto pelo SDK cliente, **quebrando a invariante
+// transação↔rollup em silêncio**. Pior: contornava por completo a proteção de
+// somente-leitura da conta demo pública, que mora no servidor.
+//
+// Uma regra que permite escrever a FONTE e proíbe escrever o DERIVADO está
+// declarando, sem querer, que existe um caminho para corromper.
+//
+// As validações de formato que viviam aqui (centavos inteiros, mês coerente com
+// a data, categoria no enum) foram removidas porque **nunca mais seriam
+// alcançadas**: sem escrita de cliente, não há o que validar. Elas continuam
+// onde agora importam — nos tipos, no servidor e na suíte de testes. Manter
+// regra inalcançável é manter documentação que ninguém executa.
+//
+// O ADMIN SDK IGNORA TUDO ISTO. A proteção do lado servidor é a árvore de
+// caminhos em lib/firestore/paths.ts, não este arquivo.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -17,126 +36,15 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == uid;
     }
 
-    function dataIso(s) {
-      return s is string && s.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
-    }
-
-    function mesIso(s) {
-      return s is string && s.matches('^[0-9]{4}-[0-9]{2}$');
-    }
-
-    function categoriaValida(c) {
-      return c == null || c in [
-        'alimentacao', 'transporte', 'moradia', 'saude', 'lazer',
-        'educacao', 'compras', 'contas_fixas', 'receita', 'outros'
-      ];
-    }
-
-    function origemValida(o) {
-      return o == null || o in ['ai', 'rule', 'user'];
-    }
-
-    function confiancaValida(c) {
-      return c == null || (c is number && c >= 0 && c <= 1);
-    }
-
-    // Tudo do usuário vive aqui embaixo. Sem uid não há caminho.
+    // Leitura continua permitida ao dono. É o que mantém o isolamento entre
+    // usuários como propriedade testável pelo SDK cliente, e é uma segunda
+    // parede caso um ID token vaze.
     match /users/{uid} {
       allow read: if dono(uid);
-      allow write: if dono(uid);
+      allow write: if false;
 
-      match /accounts/{accountId} {
-        allow read, delete: if dono(uid);
-        allow create, update: if dono(uid)
-          && request.resource.data.name is string
-          && request.resource.data.name.size() > 0
-          && request.resource.data.kind in ['checking', 'savings', 'credit_card'];
-      }
-
-      match /imports/{importId} {
-        allow read, delete: if dono(uid);
-        allow create, update: if dono(uid)
-          && request.resource.data.source in ['ofx', 'csv']
-          && request.resource.data.status in ['parsed', 'categorized', 'failed'];
-      }
-
-      match /transactions/{fingerprint} {
-        allow read, delete: if dono(uid);
-
-        // O que os `check` do Postgres validavam, agora aqui.
-        allow create: if dono(uid)
-          // Inteiro, não float. `is int` recusa 47.9 — se um dia alguém tentar
-          // gravar reais em vez de centavos, para nesta linha.
-          && request.resource.data.amountCents is int
-          && dataIso(request.resource.data.occurredOn)
-          && mesIso(request.resource.data.month)
-          // `month` tem que ser o mês de `occurredOn`, senão a transação some
-          // do gráfico do mês certo e aparece no errado.
-          && request.resource.data.month == request.resource.data.occurredOn[0:7]
-          && request.resource.data.descriptionRaw is string
-          && request.resource.data.descriptionClean is string
-          && request.resource.data.source in ['ofx', 'csv', 'bot', 'openfinance']
-          && request.resource.data.aiOptOut is bool
-          && categoriaValida(request.resource.data.category)
-          && origemValida(request.resource.data.categorySource)
-          && confiancaValida(request.resource.data.confidence)
-          && (request.resource.data.amountCents < 0
-              || request.resource.data.category == null
-              || request.resource.data.category == 'receita');
-
-        // Update so pode mexer na categoria, no opt-out e na descricao
-        // ANONIMIZADA. Valor, data e a descricao original vieram do banco e nao
-        // sao editaveis — se fossem, o dashboard deixaria de ser um retrato do
-        // extrato.
-        //
-        // descriptionClean entra na lista porque o servidor reanonimiza na
-        // fronteira da LLM e persiste o resultado; reanonimizar so pode redigir
-        // MAIS, nunca revelar. Antes desta linha as regras diziam uma coisa e o
-        // Admin SDK fazia outra — e como ele ignora as regras, ninguem via.
-        allow update: if dono(uid)
-          && request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(['category', 'categorySource', 'confidence', 'aiOptOut',
-                        'descriptionClean'])
-          && categoriaValida(request.resource.data.category)
-          && origemValida(request.resource.data.categorySource)
-          && confiancaValida(request.resource.data.confidence)
-          && request.resource.data.aiOptOut is bool
-          && request.resource.data.descriptionClean is string
-          && (resource.data.amountCents < 0
-              || request.resource.data.category == null
-              || request.resource.data.category == 'receita');
-      }
-
-      match /rules/{padrao} {
-        allow read, delete: if dono(uid);
-        allow create, update: if dono(uid)
-          && request.resource.data.pattern is string
-          && request.resource.data.pattern.size() >= 3
-          && categoriaValida(request.resource.data.category)
-          && request.resource.data.category != null
-          && request.resource.data.hits is int
-          && request.resource.data.hits >= 0;
-      }
-
-      match /insights/{periodo} {
-        allow read, delete: if dono(uid);
-        // É cache derivado e gerado no servidor. O Admin SDK ignora as rules;
-        // o cliente não precisa escrever aqui.
-        allow create, update: if false;
-      }
-
-      match /quota/{dia} {
+      match /{documento=**} {
         allow read: if dono(uid);
-        // Contador de uso da LLM. Se o cliente pudesse escrever, o teto que
-        // protege os creditos seria zerado por quem quisesse ultrapassa-lo.
-        allow write: if false;
-      }
-
-      match /rollups/{mes} {
-        allow read: if dono(uid);
-        // O rollup é derivado (§4.5): quem escreve é o servidor, dentro de uma
-        // transação. Deixar o cliente escrever abriria caminho para o número
-        // do gráfico divergir das transações sem nada quebrar.
         allow write: if false;
       }
     }

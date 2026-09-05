@@ -5,6 +5,9 @@ import { useSearchParams } from 'next/navigation'
 import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  setPersistence,
+  inMemoryPersistence,
+  signOut,
   type AuthError,
 } from 'firebase/auth'
 import { auth } from '@/lib/firebase/client'
@@ -61,14 +64,33 @@ function Formulario() {
     const senha = String(dados.get('senha') ?? '')
 
     try {
+      // Sessão do SDK cliente só na memória desta aba: sem isto, o refresh
+      // token fica em IndexedDB e sobrevive ao fechamento do navegador.
+      await setPersistence(auth, inMemoryPersistence)
+
       const cred =
         modo === 'entrar'
           ? await signInWithEmailAndPassword(auth, email, senha)
           : await createUserWithEmailAndPassword(auth, email, senha)
 
       // O ID token vai para a Server Action, que o troca por cookie httpOnly.
-      // O token em si não fica em lugar nenhum que um script possa ler depois.
       const idToken = await cred.user.getIdToken()
+
+      // E então DESLOGA do SDK cliente, de propósito.
+      //
+      // Isto fecha um buraco crítico: enquanto existe `auth.currentUser`, o
+      // Firebase Auth permite que a própria pessoa chame `deleteUser()` ou
+      // `updatePassword()` pelo console do navegador — e isso não passa por
+      // nenhuma rota nossa, então `exigirSessaoGravavel` não vê. Na conta demo
+      // pública, qualquer visitante apagaria ou sequestraria a identidade da
+      // demonstração; trocando o e-mail, deixaria até de ser reconhecido como
+      // demo.
+      //
+      // Dá para desligar porque o app **não usa o SDK cliente depois do
+      // login**: as telas são Server Components e as rotas leem a sessão do
+      // cookie httpOnly. Quem manda no acesso é o cookie, não o `currentUser`.
+      await signOut(auth)
+
       if (tokenRef.current) tokenRef.current.value = idToken
       formRef.current?.requestSubmit()
     } catch (erro) {

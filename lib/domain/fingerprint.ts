@@ -133,11 +133,18 @@ export function atribuirFingerprints(
       return { ...t, fingerprint: porFitid, alternativos: [porConteudo] }
     }
 
-    return {
-      ...t,
-      fingerprint: porConteudo,
-      alternativos: porFitid ? [porFitid] : [],
-    }
+    // FITID repetido NÃO vira alternativo — e esta linha custou um bug.
+    //
+    // Quando o banco repete o FITID, todas as linhas que o compartilham teriam
+    // o mesmo alternativo `ofx_…`. Se uma delas já estivesse gravada, as
+    // OUTRAS seriam acusadas de duplicata e **desapareceriam**: importar
+    // "COMPRA A" (FITID X, único) e depois um arquivo com "COMPRA A" e
+    // "COMPRA B" ambas com X faz a B sumir.
+    //
+    // É exatamente o estrago que o `seq` existe para evitar, entrando por
+    // outra porta. E um FITID que se repete é, por definição, uma identidade
+    // que não identifica — não serve nem como pista.
+    return { ...t, fingerprint: porConteudo, alternativos: [] }
   })
 }
 

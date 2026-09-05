@@ -25,6 +25,20 @@ export class CotaExcedidaError extends Error {
 }
 
 /**
+ * O teto do projeto inteiro. A mensagem não diz o número nem "de outros
+ * usuários": quem bateu nele não precisa saber quanto o projeto consome, e
+ * dizer isso entregaria uma métrica de uso a qualquer visitante.
+ */
+export class CotaGlobalExcedidaError extends Error {
+  constructor() {
+    super(
+      'A IA atingiu o limite de uso do dia neste ambiente. Tente amanhã.'
+    )
+    this.name = 'CotaGlobalExcedidaError'
+  }
+}
+
+/**
  * Dia no fuso de São Paulo, pelo mesmo motivo de `mesAtual()`: o corte da cota
  * deve virar à meia-noite de quem usa, não em UTC.
  */
@@ -50,23 +64,50 @@ function diaLocal(): string {
 export async function consumirCotaLlm(
   uid: string,
   quantidade: number,
-  limiteDiario: number
+  limiteDiario: number,
+  limiteGlobalDiario: number
 ): Promise<number> {
   if (quantidade <= 0) return 0
 
-  const ref = adminDb().doc(p.cota(uid, diaLocal()))
+  const dia = diaLocal()
+  const refUsuario = adminDb().doc(p.cota(uid, dia))
+  // Fora de `users/`, porque não pertence a ninguém: é o consumo do projeto.
+  // As regras negam tudo lá fora, e só o Admin SDK escreve aqui.
+  const refGlobal = adminDb().doc(p.cotaGlobal(dia))
 
   return await adminDb().runTransaction(async (tx) => {
-    const snap = await tx.get(ref)
-    const usado = snap.exists
-      ? ((snap.data()?.llmCalls as number | undefined) ?? 0)
+    // As duas leituras antes das duas escritas, como o Firestore exige.
+    const [snapUsuario, snapGlobal] = await tx.getAll(refUsuario, refGlobal)
+
+    const usado = snapUsuario.exists
+      ? ((snapUsuario.data()?.llmCalls as number | undefined) ?? 0)
+      : 0
+    const usadoGlobal = snapGlobal.exists
+      ? ((snapGlobal.data()?.llmCalls as number | undefined) ?? 0)
       : 0
 
-    if (usado + quantidade > limiteDiario) throw new CotaExcedidaError(limiteDiario)
+    if (usado + quantidade > limiteDiario) {
+      throw new CotaExcedidaError(limiteDiario)
+    }
+
+    // O teto global é o que realmente protege os créditos: o por usuário é
+    // multiplicável, porque o cadastro é aberto e dá para criar contas novas —
+    // ou consumir, apagar e recriar.
+    if (usadoGlobal + quantidade > limiteGlobalDiario) {
+      throw new CotaGlobalExcedidaError()
+    }
 
     tx.set(
-      ref,
+      refUsuario,
       { llmCalls: usado + quantidade, updatedAt: FieldValue.serverTimestamp() },
+      { merge: true }
+    )
+    tx.set(
+      refGlobal,
+      {
+        llmCalls: usadoGlobal + quantidade,
+        updatedAt: FieldValue.serverTimestamp(),
+      },
       { merge: true }
     )
 

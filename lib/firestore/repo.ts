@@ -5,7 +5,11 @@ import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
 import { normalizarPadrao, type RegraCategoria } from '@/lib/domain/rules'
 import type { InsightBody } from '@/lib/llm/schema'
-import { separarDuplicadas, type ComFingerprint } from '@/lib/domain/fingerprint'
+import {
+  normalizeDescription,
+  separarDuplicadas,
+  type ComFingerprint,
+} from '@/lib/domain/fingerprint'
 import * as p from './paths'
 import {
   aplicarDelta,
@@ -154,19 +158,46 @@ export async function listarImports(uid: string) {
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ImportDoc & { createdAt?: { toDate(): Date } }) }))
 }
 
-/** A conta usada quando o extrato não identifica nenhuma. */
+/**
+ * A conta usada quando o extrato não identifica nenhuma.
+ *
+ * O id é **derivado do nome**, e não sorteado. A versão anterior consultava por
+ * nome e criava um documento com id aleatório se não achasse — consulta e
+ * criação fora de qualquer transação. Duas importações simultâneas passavam as
+ * duas pela consulta vazia e criavam **duas contas diferentes**; como o
+ * `accountId` entra no fingerprint (§4.3), os mesmos lançamentos ganhavam
+ * identidades distintas e o extrato inteiro entrava duas vezes, com o rollup
+ * dobrado junto.
+ *
+ * Com id determinístico, a segunda chamada simplesmente encontra o documento
+ * que a primeira criou — não há janela entre "não existe" e "criei".
+ */
 export async function contaPadrao(
   uid: string,
   sugestao: { name: string; institution?: string | null; kind: TipoConta }
 ): Promise<string> {
-  const existentes = await adminDb()
-    .collection(p.contas(uid))
-    .where('name', '==', sugestao.name)
-    .limit(1)
-    .get()
+  const id =
+    'acc_' +
+    createHash('sha256')
+      .update(normalizeDescription(sugestao.name), 'utf8')
+      .digest('hex')
+      .slice(0, 24)
 
-  if (!existentes.empty) return existentes.docs[0].id
-  return criarConta(uid, sugestao)
+  const ref = adminDb().doc(p.conta(uid, id))
+
+  await ref.set(
+    {
+      name: sugestao.name,
+      institution: sugestao.institution ?? null,
+      kind: sugestao.kind,
+      createdAt: FieldValue.serverTimestamp(),
+    },
+    // `merge` para não sobrescrever `createdAt` de uma conta já existente nem
+    // apagar campos que uma versão futura venha a acrescentar.
+    { merge: true }
+  )
+
+  return id
 }
 
 export interface ResultadoGravacao {
@@ -529,8 +560,39 @@ export async function definirAiOptOut(
     if (!snap.exists) throw new Error('Transação não encontrada.')
     const dados = snap.data() as TransactionDoc
 
-    if (!optOut) {
-      tx.update(ref, { aiOptOut: false })
+    // Entrada nunca foi para a IA: `categorizarTransacoes` resolve valor
+    // positivo como `receita` de forma determinística, antes de qualquer lote.
+    // Movê-la para `outros` ao marcar opt-out sumia com o salário do gráfico
+    // por uma escolha que não muda nada no que ela faz.
+    const ehEntrada = dados.amountCents >= 0
+    const destino: Categoria | null = optOut
+      ? ehEntrada
+        ? 'receita'
+        : 'outros'
+      : // Ao voltar atrás, a categoria volta a ser NULA para que a próxima
+        // categorização a pegue: a rota só seleciona `category === null`, e
+        // sem isto "permitir IA" religava a flag e a linha nunca mais era
+        // categorizada. Entrada permanece em `receita`, que é determinístico.
+        ehEntrada
+        ? 'receita'
+        : null
+
+    const origem: TransactionDoc['categorySource'] | null =
+      destino === null ? null : optOut ? 'user' : 'rule'
+
+    // `null` conta como `outros` em `calcularRollup`, então tirar a categoria
+    // de uma saída que já estava em `outros` não move nada — mas a conta é
+    // feita de qualquer jeito, para não depender dessa coincidência.
+    const categoriaEfetivaAntes = dados.category ?? 'outros'
+    const categoriaEfetivaDepois = destino ?? 'outros'
+
+    if (categoriaEfetivaAntes === categoriaEfetivaDepois) {
+      tx.update(ref, {
+        aiOptOut: optOut,
+        category: destino,
+        categorySource: origem,
+        confidence: null,
+      })
       return
     }
 
@@ -545,14 +607,18 @@ export async function definirAiOptOut(
       count: 0,
       byCategory: {
         ...porCategoriaVazio(),
-        ...deltaDeRecategorizacao(dados.amountCents, dados.category, 'outros'),
+        ...deltaDeRecategorizacao(
+          dados.amountCents,
+          categoriaEfetivaAntes,
+          categoriaEfetivaDepois
+        ),
       },
     })
 
     tx.update(ref, {
-      aiOptOut: true,
-      category: 'outros',
-      categorySource: 'user',
+      aiOptOut: optOut,
+      category: destino,
+      categorySource: origem,
       confidence: null,
     })
     tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })

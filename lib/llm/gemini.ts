@@ -2,6 +2,7 @@ import 'server-only'
 import { GoogleGenAI, Type } from '@google/genai'
 import { CATEGORIAS, CATEGORIA_CRITERIO } from '@/lib/domain/categories'
 import { insightBodySchema } from './schema'
+import { MAX_TOKENS_SAIDA } from '@/lib/domain/limites'
 import type { EntradaCategoriaLlm, EntradaInsightLlm, LLMProvider } from './provider'
 
 const MODELO_PADRAO = 'gemini-3.6-flash'
@@ -37,6 +38,7 @@ export class GeminiProvider implements LLMProvider {
         'Não invente contexto para PIX ou transferências genéricas: use outros.\n\n' +
         `${criterios}\n\nTransações:\n${JSON.stringify(entrada)}`,
       config: {
+        maxOutputTokens: MAX_TOKENS_SAIDA,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.ARRAY,
@@ -65,6 +67,7 @@ export class GeminiProvider implements LLMProvider {
         'Não dê aconselhamento financeiro, não invente causas e não mencione categorias zeradas.\n\n' +
         JSON.stringify(entrada),
       config: {
+        maxOutputTokens: MAX_TOKENS_SAIDA,
         responseMimeType: 'application/json',
         responseSchema: {
           type: Type.OBJECT,

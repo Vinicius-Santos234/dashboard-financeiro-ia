@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { ehEmailDemo, ContaDemoError } from '@/lib/domain/demo'
 import { sugerirPadrao, encontrarRegra, normalizarPadrao } from '@/lib/domain/rules'
-import { LIMITE_LLM_DIARIO } from '@/lib/domain/limites'
+import {
+  LIMITE_LLM_DIARIO,
+  LIMITE_LLM_GLOBAL_DIARIO,
+  MAX_CARACTERES_DESCRICAO,
+} from '@/lib/domain/limites'
+import { atribuirFingerprints, separarDuplicadas } from '@/lib/domain/fingerprint'
+import { inspecionar } from '@/lib/sources/csv'
+import { planejarCategorizacao } from '@/lib/llm/categorize'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -114,18 +121,43 @@ describe('achados 3, 7 e 8 — invariantes que as regras e o código combinam', 
     'utf8'
   )
 
-  it('achado 3: as rules permitem o campo que o servidor grava', () => {
-    // O servidor persiste `descriptionClean` ao reanonimizar. Antes, a regra
-    // de update proibia — as rules descreviam um modelo que não era o real.
-    expect(rules).toContain('descriptionClean')
-    const updateBlock = rules.slice(rules.indexOf('allow update'))
-    expect(updateBlock.slice(0, 400)).toContain('descriptionClean')
+  it('as rules NÃO permitem escrita de cliente em lugar nenhum', () => {
+    // Substitui dois testes anteriores, que conferiam se uma regra de update
+    // permitia certos campos e se a cota era protegida. A garantia agora é
+    // mais forte e mais simples: o cliente não escreve nada, em canto nenhum.
+    //
+    // O motivo está no arquivo: o servidor mantém o rollup na mesma transação
+    // da transação financeira, e o cliente não sabe disso — toda escrita
+    // direta quebraria a invariante em silêncio. Era também o caminho que
+    // contornava a conta demo somente-leitura.
+    // Tira os comentários primeiro: este arquivo CITA a regra antiga para
+    // explicar por que ela saiu, e sem isso o teste analisaria a explicação
+    // como se fosse a regra. (Foi o que aconteceu na primeira versão dele.)
+    const semComentarios = rules.replace(/\/\/[^\n]*/g, '')
+
+    const permissoes = semComentarios.match(/allow\s+[a-z,\s]+:\s*if\s+[^;]+;/g) ?? []
+    expect(permissoes.length).toBeGreaterThan(0)
+
+    for (const permissao of permissoes) {
+      const permiteEscrita = /allow[^:]*\b(write|create|update|delete)\b/.test(
+        permissao
+      )
+      if (!permiteEscrita) continue
+
+      expect(
+        permissao.replace(/\s+/g, ' '),
+        'toda permissão de escrita precisa ser `if false`'
+      ).toMatch(/if false;/)
+    }
   })
 
-  it('achado 8: a cota é derivada e o cliente não escreve nela', () => {
-    expect(rules).toMatch(/match \/quota\/\{dia\}/)
-    const quotaBlock = rules.slice(rules.indexOf('match /quota/'))
-    expect(quotaBlock.slice(0, 300)).toContain('allow write: if false')
+  it('a leitura continua restrita ao dono', () => {
+    // Leitura permanece permitida: é o que mantém o isolamento entre usuários
+    // como propriedade testável pelo SDK cliente (tests/isolamento.test.ts).
+    expect(rules).toContain('allow read: if dono(uid)')
+    expect(rules).toContain(
+      'return request.auth != null && request.auth.uid == uid'
+    )
   })
 
   it('achado 8: o limite diário é um número sensato', () => {
@@ -143,5 +175,106 @@ describe('achados 3, 7 e 8 — invariantes que as regras e o código combinam', 
       expect(fonte, arquivo).not.toMatch(/console\.error\([^)]*,\s*erro\s*\)/)
       expect(fonte, arquivo).toContain('erro instanceof Error ? erro.message')
     }
+  })
+})
+
+describe('revisão final do Codex — regressão', () => {
+  it('FITID repetido não emite alternativo, para não comer linha legítima', () => {
+    // O bug que eu introduzi ao corrigir o achado 3.3 da rodada anterior:
+    // quando o banco repete o FITID, todas as linhas compartilhavam o mesmo
+    // alternativo `ofx_…`. Se uma já estivesse gravada, as outras eram
+    // acusadas de duplicata e sumiam.
+    const [a, b] = atribuirFingerprints('conta', [
+      { occurredOn: '2026-08-14', amountCents: -1000, description: 'COMPRA A', fitid: 'X' },
+      { occurredOn: '2026-08-14', amountCents: -2000, description: 'COMPRA B', fitid: 'X' },
+    ])
+
+    expect(a.alternativos).toEqual([])
+    expect(b.alternativos).toEqual([])
+  })
+
+  it('e por isso a segunda linha sobrevive quando a primeira já existe', () => {
+    const arquivo1 = atribuirFingerprints('conta', [
+      { occurredOn: '2026-08-14', amountCents: -1000, description: 'COMPRA A', fitid: 'X' },
+    ])
+    const gravados = arquivo1.map((t) => t.fingerprint)
+
+    // Arquivo 2: a mesma COMPRA A e uma COMPRA B nova, ambas com o FITID
+    // defeituoso repetido.
+    const arquivo2 = atribuirFingerprints('conta', [
+      { occurredOn: '2026-08-14', amountCents: -1000, description: 'COMPRA A', fitid: 'X' },
+      { occurredOn: '2026-08-14', amountCents: -2000, description: 'COMPRA B', fitid: 'X' },
+    ])
+
+    const { novas } = separarDuplicadas(arquivo2, gravados)
+
+    // COMPRA B tem que entrar. Antes da correção, sumia.
+    expect(novas.map((t) => t.description)).toContain('COMPRA B')
+  })
+
+  it('a sugestão de mapeamento não chuta formato de data', () => {
+    // A recusa de ambiguidade existia e a UI a contornava: `inspecionar`
+    // devolvia o palpite, a tela copiava para o mapeamento, e o `parse` via um
+    // formato informado e não questionava.
+    const ambiguo = 'Data;Historico;Valor\n04/05/2026;A;-10,00\n06/07/2026;B;-20,00\n'
+    const r = inspecionar(ambiguo)
+
+    expect(r.formatoDataCerto).toBe(false)
+    expect(r.sugestao.formatoData).toBeUndefined()
+  })
+
+  it('mas sugere quando tem certeza', () => {
+    const claro = 'Data;Historico;Valor\n25/08/2026;A;-10,00\n06/07/2026;B;-20,00\n'
+    const r = inspecionar(claro)
+
+    expect(r.formatoDataCerto).toBe(true)
+    expect(r.sugestao.formatoData).toBe('dd/mm/yyyy')
+  })
+
+  it('o plano de categorização não cobra pelo que as regras resolvem', () => {
+    // A cota conta chamadas reais. Antes a rota estimava os lotes sobre toda
+    // saída sem opt-out, e as regras só entravam depois: 1.000 transações que
+    // casassem com regras gastavam 20 unidades e faziam zero chamadas.
+    const transacoes = Array.from({ length: 100 }, (_, i) => ({
+      fingerprint: `h_${i}`,
+      occurredOn: '2026-08-14',
+      month: '2026-08',
+      amountCents: -1000,
+      descriptionClean: 'UBER TRIP',
+      aiOptOut: false,
+    }))
+
+    const plano = planejarCategorizacao(transacoes, [
+      { pattern: 'UBER', category: 'transporte', hits: 0 },
+    ])
+
+    expect(plano.lotes).toBe(0)
+    expect(plano.paraIa).toHaveLength(0)
+    expect(plano.prontas).toHaveLength(100)
+  })
+
+  it('há teto global além do teto por usuário', () => {
+    // O teto por usuário é multiplicável: o cadastro é aberto, então quem
+    // quiser gastar os créditos cria contas.
+    expect(LIMITE_LLM_GLOBAL_DIARIO).toBeGreaterThan(LIMITE_LLM_DIARIO)
+  })
+
+  it('a descrição enviada à LLM tem corte de tamanho', () => {
+    // A cota conta chamadas, não tokens: um lote de descrições gigantes custa
+    // o mesmo e gasta ordens de grandeza mais.
+    expect(MAX_CARACTERES_DESCRICAO).toBeGreaterThan(40)
+    expect(MAX_CARACTERES_DESCRICAO).toBeLessThan(400)
+  })
+
+  it('o login desloga do SDK cliente e usa persistência em memória', () => {
+    // Guarda de arquitetura para o crítico 1: enquanto existir
+    // `auth.currentUser`, o visitante da demo chama `deleteUser()` pelo console
+    // e apaga a demonstração — sem passar por nenhuma rota nossa.
+    const fonte = readFileSync(
+      resolve(__dirname, '..', 'app/(auth)/login/page.tsx'),
+      'utf8'
+    )
+    expect(fonte).toContain('inMemoryPersistence')
+    expect(fonte).toContain('signOut(auth)')
   })
 })

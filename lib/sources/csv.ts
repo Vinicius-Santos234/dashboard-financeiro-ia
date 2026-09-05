@@ -121,7 +121,11 @@ export function inspecionar(input: ArrayBuffer | string): InspecaoCsv {
       colunaDescricao: acharColuna(colunas, PISTAS_DESCRICAO),
       colunaValor: acharColuna(colunas, PISTAS_VALOR),
       colunaValorSaida: colunaSaida,
-      formatoData: deteccao.formato,
+      // Só sugere formato quando a detecção TEM certeza. Sugerir mesmo sem
+      // certeza fazia a tela copiar o palpite para o mapeamento, e a recusa de
+      // ambiguidade no `parse` nunca rodava — a correção existia e a interface
+      // a contornava.
+      formatoData: deteccao.certeza ? deteccao.formato : undefined,
     },
     formatoDataCerto: deteccao.certeza,
   }
@@ -145,6 +149,19 @@ export const csvAdapter: SourceAdapter<CsvMapping> = {
       if (!colunas.includes(obrigatoria)) {
         throw new CsvInvalidoError(`o arquivo não tem a coluna "${obrigatoria}"`)
       }
+    }
+
+    // A mesma coluna nos dois papéis daria `abs(v) - abs(v) = 0` em toda
+    // linha, e o extrato inteiro viraria zero — depois classificado como
+    // `receita`, porque zero não é negativo.
+    if (
+      mapping.colunaValorSaida &&
+      mapping.colunaValorSaida === mapping.colunaValor
+    ) {
+      throw new CsvInvalidoError(
+        'a coluna de saídas precisa ser diferente da de valores; do jeito que ' +
+          'está, toda linha viraria zero'
+      )
     }
 
     // Aspa não fechada não corrompe uma linha: ela engole as seguintes dentro

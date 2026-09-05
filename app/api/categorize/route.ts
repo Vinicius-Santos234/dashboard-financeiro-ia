@@ -9,11 +9,15 @@ import {
   listarRegras,
   listarTransacoesDoImport,
 } from '@/lib/firestore/repo'
-import { consumirCotaLlm, CotaExcedidaError } from '@/lib/firestore/quota'
-import { categorizarTransacoes, TAMANHO_LOTE } from '@/lib/llm/categorize'
+import {
+  consumirCotaLlm,
+  CotaExcedidaError,
+  CotaGlobalExcedidaError,
+} from '@/lib/firestore/quota'
+import { categorizarTransacoes, planejarCategorizacao } from '@/lib/llm/categorize'
 import { GeminiProvider } from '@/lib/llm/gemini'
 import { mensagemPublicaLlm } from '@/lib/llm/errors'
-import { LIMITE_LLM_DIARIO } from '@/lib/domain/limites'
+import { LIMITE_LLM_DIARIO, LIMITE_LLM_GLOBAL_DIARIO } from '@/lib/domain/limites'
 
 const entradaSchema = z.object({
   importId: z.string().min(1).max(200),
@@ -50,14 +54,24 @@ export async function POST(request: Request) {
     const provider = new GeminiProvider()
     const regras = await listarRegras(uid)
 
-    // Cobra a cota ANTES de chamar o Gemini: cobrar depois deixaria o custo
-    // acontecer e só então recusar, que é o contrário do que o teto serve.
-    // Cada lote de ${TAMANHO_LOTE} transações é uma chamada.
-    const lotes = Math.ceil(
-      transacoes.filter((t) => !t.aiOptOut && t.amountCents < 0).length / TAMANHO_LOTE
-    )
-    if (lotes > 0) await consumirCotaLlm(uid, lotes, LIMITE_LLM_DIARIO)
-    const categorias = await categorizarTransacoes(transacoes, regras, provider)
+    // O plano decide o que vai à IA sem chamar nada, então a cota é cobrada
+    // pelo número REAL de chamadas. Antes a conta era estimada sobre toda
+    // saída sem opt-out, e as regras só entravam depois: 1.000 transações que
+    // casassem com regras gastavam 20 unidades e faziam zero chamadas.
+    const plano = planejarCategorizacao(transacoes, regras)
+
+    // Cobrada ANTES de chamar: cobrar depois deixaria o custo acontecer e só
+    // então recusar, que é o contrário do que o teto serve.
+    if (plano.lotes > 0) {
+      await consumirCotaLlm(
+        uid,
+        plano.lotes,
+        LIMITE_LLM_DIARIO,
+        LIMITE_LLM_GLOBAL_DIARIO
+      )
+    }
+
+    const categorias = await categorizarTransacoes(plano, provider)
 
     await aplicarCategorias(uid, categorias)
     await incrementarHitsRegras(
@@ -76,7 +90,7 @@ export async function POST(request: Request) {
       model: provider.model,
     })
   } catch (erro) {
-    if (erro instanceof CotaExcedidaError) {
+    if (erro instanceof CotaExcedidaError || erro instanceof CotaGlobalExcedidaError) {
       return NextResponse.json({ erro: erro.message }, { status: 429 })
     }
 

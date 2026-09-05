@@ -89,8 +89,14 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
     uidB = (await entrar(B.auth, B_EMAIL!, B_SENHA!, 'B')).user.uid
     expect(uidA).not.toBe(uidB)
 
-    // B grava algo que A nunca deveria ver.
-    await setDoc(doc(B.db, `users/${uidB}/transactions/${TX_DE_B}`), {
+    // O seed de B agora vai pelo Admin SDK.
+    //
+    // Antes ele usava o SDK cliente — e aquele `setDoc` bem-sucedido ERA a
+    // prova de que existia um caminho de escrita direta do cliente, capaz de
+    // quebrar a invariante transação↔rollup e de contornar a conta demo
+    // somente-leitura. O teste demonstrava o buraco e ninguém leu assim.
+    const { adminDb } = await import('@/lib/firebase/admin')
+    await adminDb().doc(`users/${uidB}/transactions/${TX_DE_B}`).set({
       accountId: 'conta-do-b',
       importId: null,
       occurredOn: '2026-08-14',
@@ -152,6 +158,38 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
         aiOptOut: false,
       })
     ).rejects.toThrow(/permission|insufficient/i)
+  })
+
+  it('A não escreve nem na PRÓPRIA árvore — o cliente não escreve nada', async () => {
+    // A garantia que substituiu a anterior. Enquanto as regras permitiam
+    // `create, update, delete: if dono(uid)`, qualquer usuário autenticado
+    // gravava direto pelo SDK cliente, sem passar pelo servidor — e o servidor
+    // é quem mantém o rollup na mesma transação.
+    await expect(
+      setDoc(doc(A.db, `users/${uidA}/transactions/h_escrita_direta`), {
+        accountId: 'x',
+        importId: null,
+        occurredOn: '2026-08-14',
+        month: '2026-08',
+        amountCents: -100,
+        descriptionRaw: 'ESCRITA DIRETA',
+        descriptionClean: 'ESCRITA DIRETA',
+        fitid: null,
+        category: null,
+        categorySource: null,
+        confidence: null,
+        source: 'ofx',
+        aiOptOut: false,
+      })
+    ).rejects.toThrow(/permission|insufficient/i)
+  })
+
+  it('A continua LENDO a própria árvore', async () => {
+    // Contraprova: se leitura também estivesse negada, os testes de isolamento
+    // passariam por "está tudo bloqueado" em vez de por isolamento de verdade.
+    await expect(
+      getDocs(collection(A.db, `users/${uidA}/transactions`))
+    ).resolves.toBeDefined()
   })
 
   it('quem não fez login não lê nada', async () => {

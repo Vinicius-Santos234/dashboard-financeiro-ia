@@ -3,6 +3,7 @@ import { encontrarRegra, type RegraCategoria } from '@/lib/domain/rules'
 import type { Categoria } from '@/lib/domain/categories'
 import { respostaCategoriaSchema } from './schema'
 import type { EntradaCategoriaLlm, LLMProvider } from './provider'
+import { MAX_CARACTERES_DESCRICAO } from '@/lib/domain/limites'
 
 export const TAMANHO_LOTE = 50
 export const MAX_LOTES = 20
@@ -26,11 +27,27 @@ export interface CategoriaAplicada {
   descriptionClean: string
 }
 
-export async function categorizarTransacoes(
+export interface PlanoCategorizacao {
+  /** Resolvidas sem IA: opt-out, entradas e o que casou com uma regra. */
+  prontas: CategoriaAplicada[]
+  paraIa: Array<{ transacao: TransacaoCategorizavel; clean: string }>
+  /** Quantas chamadas à LLM este plano custa. */
+  lotes: number
+}
+
+/**
+ * Decide o que vai à IA **sem chamar nada**.
+ *
+ * Separado de `categorizarTransacoes` para que a cota possa ser cobrada pelo
+ * número real de chamadas. Antes, a rota estimava os lotes contando toda saída
+ * sem opt-out — e as regras só eram aplicadas depois, lá dentro: 1.000
+ * transações que casassem com regras gastavam 20 unidades da cota e faziam
+ * **zero** chamadas.
+ */
+export function planejarCategorizacao(
   transacoes: readonly TransacaoCategorizavel[],
-  regras: readonly RegraCategoria[],
-  provider: LLMProvider
-): Promise<CategoriaAplicada[]> {
+  regras: readonly RegraCategoria[]
+): PlanoCategorizacao {
   if (transacoes.length > TAMANHO_LOTE * MAX_LOTES) {
     throw new Error(`O limite de categorização é ${TAMANHO_LOTE * MAX_LOTES} transações.`)
   }
@@ -88,6 +105,19 @@ export async function categorizarTransacoes(
     paraIa.push({ transacao, clean })
   }
 
+  return { prontas, paraIa, lotes: Math.ceil(paraIa.length / TAMANHO_LOTE) }
+}
+
+/**
+ * Executa o plano: chama a LLM só para o que sobrou.
+ */
+export async function categorizarTransacoes(
+  plano: PlanoCategorizacao,
+  provider: LLMProvider
+): Promise<CategoriaAplicada[]> {
+  const { paraIa } = plano
+  const prontas: CategoriaAplicada[] = [...plano.prontas]
+
   for (let inicio = 0; inicio < paraIa.length; inicio += TAMANHO_LOTE) {
     const lote = paraIa.slice(inicio, inicio + TAMANHO_LOTE)
     const porId = new Map<string, (typeof lote)[number]>()
@@ -96,7 +126,9 @@ export async function categorizarTransacoes(
       porId.set(id, item)
       return {
         id,
-        desc: item.clean,
+        // Corte de tamanho: a cota conta CHAMADAS, nao tokens, entao um lote
+        // de descricoes gigantes custaria o mesmo e gastaria muito mais.
+        desc: item.clean.slice(0, MAX_CARACTERES_DESCRICAO),
         v: item.transacao.amountCents,
         d: item.transacao.occurredOn,
       }

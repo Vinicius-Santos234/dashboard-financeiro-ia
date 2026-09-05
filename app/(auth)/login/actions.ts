@@ -54,14 +54,19 @@ export async function abrirSessao(
   }
 
   const sessao = await lerSessao()
-  if (sessao) await garantirUsuario(sessao.uid, sessao.email)
+  // A demo nao grava: o documento dela ja existe (o seed criou), e cada visita
+  // publica regravaria `criadoEm`, que e escrita numa conta somente-leitura.
+  if (sessao && !sessao.demo) await garantirUsuario(sessao.uid, sessao.email)
 
   revalidatePath('/', 'layout')
   redirect(destinoSeguro(parsed.data.proximo))
 }
 
 export async function sair() {
-  await encerrarSessao()
+  // Na demo, so apaga o cookie desta maquina: revogar derrubaria a sessao de
+  // todos os outros visitantes que estivessem navegando na conta compartilhada.
+  const sessao = await lerSessao()
+  await encerrarSessao(!sessao?.demo)
   revalidatePath('/', 'layout')
   redirect('/login')
 }

@@ -7,12 +7,16 @@ import {
   lerRollup,
   salvarInsight,
 } from '@/lib/firestore/repo'
-import { consumirCotaLlm, CotaExcedidaError } from '@/lib/firestore/quota'
+import {
+  consumirCotaLlm,
+  CotaExcedidaError,
+  CotaGlobalExcedidaError,
+} from '@/lib/firestore/quota'
 import { mesAnterior, mesValido } from '@/lib/domain/month'
 import { GeminiProvider } from '@/lib/llm/gemini'
 import { obterOuGerarInsight } from '@/lib/llm/insights'
 import { mensagemPublicaLlm } from '@/lib/llm/errors'
-import { LIMITE_LLM_DIARIO } from '@/lib/domain/limites'
+import { LIMITE_LLM_DIARIO, LIMITE_LLM_GLOBAL_DIARIO } from '@/lib/domain/limites'
 
 const entradaSchema = z.object({
   month: z.string().refine(mesValido, 'Mês inválido.'),
@@ -62,7 +66,7 @@ export async function POST(request: Request) {
     // Uma geração é uma chamada. Cobrada antes, pelo mesmo motivo do
     // /api/categorize.
     if (regenerate || !(await lerInsight(uid, month))) {
-      await consumirCotaLlm(uid, 1, LIMITE_LLM_DIARIO)
+      await consumirCotaLlm(uid, 1, LIMITE_LLM_DIARIO, LIMITE_LLM_GLOBAL_DIARIO)
     }
 
     const resultado = await obterOuGerarInsight(month, regenerate, {
@@ -83,7 +87,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json(resultado)
   } catch (erro) {
-    if (erro instanceof CotaExcedidaError) {
+    if (erro instanceof CotaExcedidaError || erro instanceof CotaGlobalExcedidaError) {
       return NextResponse.json({ erro: erro.message }, { status: 429 })
     }
 

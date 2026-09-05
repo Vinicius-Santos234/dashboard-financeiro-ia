@@ -40,6 +40,13 @@ export const cotas = (uid: string) => `users/${uid}/quota`
 /** `dia` e sempre YYYY-MM-DD. */
 export const cota = (uid: string, dia: string) => `${cotas(uid)}/${dia}`
 
+/**
+ * Consumo de LLM do projeto inteiro, por dia. Fica FORA de `users/` porque nao
+ * pertence a ninguem — e as regras negam tudo fora de `users/`, entao so o
+ * Admin SDK alcanca.
+ */
+export const cotaGlobal = (dia: string) => `system/quota-${dia}`
+
 export const rollups = (uid: string) => `users/${uid}/rollups`
 export const rollup = (uid: string, mes: string) => `${rollups(uid)}/${mes}`
 

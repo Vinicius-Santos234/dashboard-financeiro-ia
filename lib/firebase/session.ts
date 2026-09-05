@@ -27,10 +27,23 @@ export type Sessao = {
 }
 
 /** Troca o ID token do cliente por um cookie de sessão. */
+/** Um ID token só vira sessão de 5 dias se o login for recente. */
+const MAX_IDADE_LOGIN_S = 5 * 60
+
 export async function criarSessao(idToken: string): Promise<void> {
   // `checkRevoked` na verificação: se a conta foi desativada ou o token
   // revogado entre o login e esta chamada, não vira sessão.
-  await adminAuth().verifyIdToken(idToken, true)
+  const claims = await adminAuth().verifyIdToken(idToken, true)
+
+  // `auth_time` é quando a pessoa realmente autenticou, e não quando o token
+  // foi emitido — um ID token é renovado sozinho por até uma hora. Sem esta
+  // checagem, um token roubado e ainda válido seria promovido a um cookie de
+  // CINCO DIAS, que é uma escalada e tanto para quem só interceptou um
+  // instante da sessão.
+  const idadeLogin = Date.now() / 1000 - claims.auth_time
+  if (idadeLogin > MAX_IDADE_LOGIN_S) {
+    throw new Error('Login antigo demais para abrir sessão. Entre novamente.')
+  }
 
   const cookie = await adminAuth().createSessionCookie(idToken, {
     expiresIn: DURACAO_MS,
@@ -94,20 +107,29 @@ export async function exigirSessaoGravavel(acao?: string): Promise<Sessao> {
   return sessao
 }
 
-export async function encerrarSessao(): Promise<void> {
+/**
+ * Encerra a sessão desta máquina.
+ *
+ * `revogarTudo` derruba as sessões de **todos** os dispositivos daquele uid, e
+ * por isso é opcional: numa conta pessoal é o comportamento desejado ao sair,
+ * mas a conta demo é **compartilhada por visitantes anônimos**, e um deles
+ * clicando em "Sair" derrubaria a sessão de todos os outros que estivessem
+ * navegando naquele momento.
+ */
+export async function encerrarSessao(revogarTudo = true): Promise<void> {
   const store = await cookies()
   const cookie = store.get(NOME)?.value
 
-  if (cookie) {
+  if (cookie && revogarTudo) {
     try {
       const claims = await adminAuth().verifySessionCookie(cookie)
-      // Revoga no servidor, não só apaga o cookie: sair numa máquina precisa
-      // derrubar a sessão, não apenas esquecê-la nesta.
       await adminAuth().revokeRefreshTokens(claims.sub)
     } catch {
       // Cookie já inválido. Apagar mesmo assim.
     }
   }
 
+  // Apagar o cookie basta para sair aqui: sem ele, nenhuma rota reconhece a
+  // sessão, e o SDK cliente já foi deslogado no login.
   store.delete(NOME)
 }
