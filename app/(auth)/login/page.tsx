@@ -43,6 +43,8 @@ function Formulario() {
   const [modo, setModo] = useState<'entrar' | 'cadastrar'>('entrar')
   const [erroLocal, setErroLocal] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState(false)
+  const [email, setEmail] = useState('')
+  const [senha, setSenha] = useState('')
   const [estado, enviarSessao] = useActionState(abrirSessao, INICIAL)
 
   const formRef = useRef<HTMLFormElement>(null)
@@ -96,6 +98,8 @@ function Formulario() {
           <input
             name="email"
             type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
             required
             className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:focus:border-neutral-100"
@@ -107,6 +111,8 @@ function Formulario() {
           <input
             name="senha"
             type="password"
+            value={senha}
+            onChange={(e) => setSenha(e.target.value)}
             autoComplete={modo === 'entrar' ? 'current-password' : 'new-password'}
             required
             minLength={6}
@@ -127,6 +133,21 @@ function Formulario() {
           {ocupado ? 'Aguarde…' : modo === 'entrar' ? 'Entrar' : 'Criar conta'}
         </Button>
       </form>
+
+      {process.env.NEXT_PUBLIC_DEMO_EMAIL && process.env.NEXT_PUBLIC_DEMO_PASSWORD && (
+        <button
+          type="button"
+          onClick={() => {
+            setModo('entrar')
+            setEmail(process.env.NEXT_PUBLIC_DEMO_EMAIL ?? '')
+            setSenha(process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? '')
+            setErroLocal(null)
+          }}
+          className="rounded-md border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          Preencher conta demo
+        </button>
+      )}
 
       {/* Segundo formulário, invisível: leva só o ID token ao servidor. */}
       <form ref={formRef} action={enviarSessao} className="hidden">

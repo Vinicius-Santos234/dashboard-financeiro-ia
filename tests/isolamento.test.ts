@@ -225,6 +225,46 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
     ).rejects.toThrow(/permission|insufficient/i)
   })
 
+  it('as regras impedem entrada positiva fora de Receita', async () => {
+    await expect(
+      setDoc(doc(A.db, `users/${uidA}/transactions/h_entrada_como_gasto`), {
+        accountId: 'x',
+        importId: null,
+        occurredOn: '2026-08-14',
+        month: '2026-08',
+        amountCents: 10000,
+        descriptionRaw: 'ENTRADA',
+        descriptionClean: 'ENTRADA',
+        fitid: null,
+        category: 'alimentacao',
+        categorySource: 'user',
+        confidence: null,
+        source: 'ofx',
+        aiOptOut: false,
+      })
+    ).rejects.toThrow(/permission|insufficient/i)
+  })
+
+  it('as regras recusam confiança fora de 0 a 1', async () => {
+    await expect(
+      setDoc(doc(A.db, `users/${uidA}/transactions/h_confianca_invalida`), {
+        accountId: 'x',
+        importId: null,
+        occurredOn: '2026-08-14',
+        month: '2026-08',
+        amountCents: -100,
+        descriptionRaw: 'X',
+        descriptionClean: 'X',
+        fitid: null,
+        category: 'outros',
+        categorySource: 'ai',
+        confidence: 4,
+        source: 'ofx',
+        aiOptOut: false,
+      })
+    ).rejects.toThrow(/permission|insufficient/i)
+  })
+
   it('o cliente não escreve no rollup — ele é derivado', async () => {
     // Se o app pudesse escrever aqui, o número do gráfico poderia divergir
     // das transações sem nada quebrar. Spec §4.5.

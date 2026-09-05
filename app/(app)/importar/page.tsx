@@ -15,6 +15,8 @@ type Resultado = {
   duplicadas: number
   descartadas: LinhaDescartada[]
   jaImportadoAntes: boolean
+  categorizacao?: { total: number; porIa: number; porRegra: number; model: string }
+  aviso?: string
 }
 
 const FORMATOS: { valor: FormatoData; rotulo: string }[] = [
@@ -89,6 +91,20 @@ export default function ImportarPage() {
       }
 
       setResultado(json)
+
+      // Importar é durável mesmo se o provedor estiver indisponível. A tela
+      // deixa isso explícito e a categorização pode ser tentada novamente.
+      const categoria = await fetch('/api/categorize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ importId: json.importId }),
+      })
+      const categoriaJson = await categoria.json()
+      setResultado(
+        categoria.ok
+          ? { ...json, categorizacao: categoriaJson }
+          : { ...json, aviso: categoriaJson.erro ?? 'Categorização pendente.' }
+      )
       router.refresh()
     } finally {
       setOcupado(false)
@@ -333,6 +349,19 @@ function Resumo({ r, onNovo }: { r: Resultado; onNovo: () => void }) {
         </details>
       )}
 
+      {r.categorizacao && (
+        <p className="mt-4 rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+          {r.categorizacao.total} transação(ões) categorizada(s):{' '}
+          {r.categorizacao.porRegra} por regra e {r.categorizacao.porIa} por IA.
+        </p>
+      )}
+
+      {r.aviso && (
+        <p role="alert" className="mt-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          {r.aviso}
+        </p>
+      )}
+
       <div className="mt-5 flex gap-3">
         <Button onClick={onNovo}>Importar outro</Button>
         <a
@@ -354,4 +383,3 @@ function Item({ rotulo, valor }: { rotulo: string; valor: number }) {
     </div>
   )
 }
-

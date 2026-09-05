@@ -32,6 +32,14 @@ service cloud.firestore {
       ];
     }
 
+    function origemValida(o) {
+      return o == null || o in ['ai', 'rule', 'user'];
+    }
+
+    function confiancaValida(c) {
+      return c == null || (c is number && c >= 0 && c <= 1);
+    }
+
     // Tudo do usuário vive aqui embaixo. Sem uid não há caminho.
     match /users/{uid} {
       allow read: if dono(uid);
@@ -69,7 +77,12 @@ service cloud.firestore {
           && request.resource.data.descriptionClean is string
           && request.resource.data.source in ['ofx', 'csv', 'bot', 'openfinance']
           && request.resource.data.aiOptOut is bool
-          && categoriaValida(request.resource.data.category);
+          && categoriaValida(request.resource.data.category)
+          && origemValida(request.resource.data.categorySource)
+          && confiancaValida(request.resource.data.confidence)
+          && (request.resource.data.amountCents < 0
+              || request.resource.data.category == null
+              || request.resource.data.category == 'receita');
 
         // Update só pode mexer na categoria e no opt-out. Valor, data e
         // descrição vieram do banco e não são editáveis pelo app — se fossem,
@@ -78,19 +91,30 @@ service cloud.firestore {
           && request.resource.data.diff(resource.data).affectedKeys()
                .hasOnly(['category', 'categorySource', 'confidence', 'aiOptOut'])
           && categoriaValida(request.resource.data.category)
-          && request.resource.data.categorySource in ['ai', 'rule', 'user', null];
+          && origemValida(request.resource.data.categorySource)
+          && confiancaValida(request.resource.data.confidence)
+          && request.resource.data.aiOptOut is bool
+          && (resource.data.amountCents < 0
+              || request.resource.data.category == null
+              || request.resource.data.category == 'receita');
       }
 
       match /rules/{padrao} {
         allow read, delete: if dono(uid);
         allow create, update: if dono(uid)
+          && request.resource.data.pattern is string
+          && request.resource.data.pattern.size() >= 3
           && categoriaValida(request.resource.data.category)
-          && request.resource.data.category != null;
+          && request.resource.data.category != null
+          && request.resource.data.hits is int
+          && request.resource.data.hits >= 0;
       }
 
       match /insights/{periodo} {
         allow read, delete: if dono(uid);
-        allow create, update: if dono(uid) && mesIso(periodo);
+        // É cache derivado e gerado no servidor. O Admin SDK ignora as rules;
+        // o cliente não precisa escrever aqui.
+        allow create, update: if false;
       }
 
       match /rollups/{mes} {

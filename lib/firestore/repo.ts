@@ -2,6 +2,8 @@ import 'server-only'
 import { FieldValue } from 'firebase-admin/firestore'
 import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
+import { normalizarPadrao, type RegraCategoria } from '@/lib/domain/rules'
+import type { InsightBody } from '@/lib/llm/schema'
 import { separarDuplicadas, type ComFingerprint } from '@/lib/domain/fingerprint'
 import * as p from './paths'
 import {
@@ -142,6 +144,15 @@ export async function importsComMesmoHash(uid: string, fileHash: string) {
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ImportDoc) }))
 }
 
+export async function listarImports(uid: string) {
+  const snap = await adminDb()
+    .collection(p.importacoes(uid))
+    .orderBy('createdAt', 'desc')
+    .limit(50)
+    .get()
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as ImportDoc & { createdAt?: { toDate(): Date } }) }))
+}
+
 /** A conta usada quando o extrato não identifica nenhuma. */
 export async function contaPadrao(
   uid: string,
@@ -166,7 +177,7 @@ export interface OpcoesGravacao {
   accountId: string
   importId: string
   source: TransactionDoc['source']
-  /** Descrição anonimizada (§7.1). Na E2 ainda é a própria descrição. */
+  /** Descrição anonimizada (§7.1). */
   descriptionClean: (t: ComFingerprint) => string
 }
 
@@ -335,9 +346,210 @@ export async function recategorizar(
   })
 }
 
+export interface AtualizacaoCategoria {
+  fingerprint: string
+  month: string
+  category: Categoria
+  categorySource: 'ai' | 'rule' | 'user'
+  confidence: number | null
+  descriptionClean?: string
+}
+
+/**
+ * Categoriza em lote e mantém o rollup na mesma transação. Fazer uma
+ * transação por linha tornaria um extrato grande lento e caro; agrupar por mês
+ * também garante que cada transação do Firestore toque um só rollup.
+ */
+export async function aplicarCategorias(
+  uid: string,
+  atualizacoes: readonly AtualizacaoCategoria[]
+): Promise<void> {
+  const porMes = new Map<string, AtualizacaoCategoria[]>()
+  for (const atualizacao of atualizacoes) {
+    const lista = porMes.get(atualizacao.month) ?? []
+    lista.push(atualizacao)
+    porMes.set(atualizacao.month, lista)
+  }
+
+  for (const [mes, doMes] of porMes) {
+    for (let inicio = 0; inicio < doMes.length; inicio += LOTE) {
+      const pedaco = doMes.slice(inicio, inicio + LOTE)
+      const rollupRef = adminDb().doc(p.rollup(uid, mes))
+      const referencias = pedaco.map((a) => adminDb().doc(p.transacao(uid, a.fingerprint)))
+
+      await adminDb().runTransaction(async (tx) => {
+        const [rollupSnap, ...documentos] = await tx.getAll(rollupRef, ...referencias)
+        let novo = rollupSnap.exists
+          ? (rollupSnap.data() as Rollup)
+          : rollupVazio(mes)
+
+        for (let indice = 0; indice < documentos.length; indice += 1) {
+          const documento = documentos[indice]
+          if (!documento.exists) continue
+
+          const atualizacao = pedaco[indice]
+          const anterior = documento.data() as TransactionDoc
+          novo = aplicarDelta(novo, {
+            totalInCents: 0,
+            totalOutCents: 0,
+            count: 0,
+            byCategory: {
+              ...porCategoriaVazio(),
+              ...deltaDeRecategorizacao(
+                anterior.amountCents,
+                anterior.category,
+                atualizacao.category
+              ),
+            },
+          })
+
+          tx.update(documento.ref, {
+            category: atualizacao.category,
+            categorySource: atualizacao.categorySource,
+            confidence: atualizacao.confidence,
+            ...(atualizacao.descriptionClean
+              ? { descriptionClean: atualizacao.descriptionClean }
+              : {}),
+          })
+        }
+
+        tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+      })
+    }
+  }
+}
+
+export async function listarTransacoesDoImport(uid: string, importId: string) {
+  const snap = await adminDb()
+    .collection(p.transacoes(uid))
+    .where('importId', '==', importId)
+    .get()
+
+  return snap.docs.map((d) => ({ fingerprint: d.id, ...(d.data() as TransactionDoc) }))
+}
+
+export async function obterTransacao(uid: string, fingerprint: string) {
+  const snap = await adminDb().doc(p.transacao(uid, fingerprint)).get()
+  return snap.exists
+    ? { fingerprint: snap.id, ...(snap.data() as TransactionDoc) }
+    : null
+}
+
+export async function listarRegras(uid: string): Promise<RegraCategoria[]> {
+  const snap = await adminDb().collection(p.regras(uid)).get()
+  return snap.docs.map((d) => d.data() as RegraCategoria)
+}
+
+export async function salvarRegra(
+  uid: string,
+  pattern: string,
+  category: Categoria
+): Promise<string> {
+  const normalizado = normalizarPadrao(pattern)
+  if (normalizado.length < 3) throw new Error('O padrão precisa ter ao menos 3 caracteres.')
+
+  const ref = adminDb().doc(p.regra(uid, p.idSeguro(normalizado)))
+  await adminDb().runTransaction(async (tx) => {
+    const atual = await tx.get(ref)
+    tx.set(
+      ref,
+      {
+        pattern: normalizado,
+        category,
+        hits: atual.exists ? ((atual.data()?.hits as number | undefined) ?? 0) : 0,
+        ...(atual.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      },
+      { merge: true }
+    )
+  })
+  return normalizado
+}
+
+export async function incrementarHitsRegras(
+  uid: string,
+  padroes: readonly string[]
+): Promise<void> {
+  const contagem = new Map<string, number>()
+  for (const padrao of padroes) contagem.set(padrao, (contagem.get(padrao) ?? 0) + 1)
+  if (contagem.size === 0) return
+
+  const batch = adminDb().batch()
+  for (const [padrao, hits] of contagem) {
+    batch.update(adminDb().doc(p.regra(uid, p.idSeguro(padrao))), {
+      hits: FieldValue.increment(hits),
+    })
+  }
+  await batch.commit()
+}
+
+export async function definirAiOptOut(
+  uid: string,
+  fingerprint: string,
+  optOut: boolean
+): Promise<void> {
+  const ref = adminDb().doc(p.transacao(uid, fingerprint))
+  await adminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref)
+    if (!snap.exists) throw new Error('Transação não encontrada.')
+    const dados = snap.data() as TransactionDoc
+
+    if (!optOut) {
+      tx.update(ref, { aiOptOut: false })
+      return
+    }
+
+    const rollupRef = adminDb().doc(p.rollup(uid, dados.month))
+    const rollupSnap = await tx.get(rollupRef)
+    const base = rollupSnap.exists
+      ? (rollupSnap.data() as Rollup)
+      : rollupVazio(dados.month)
+    const novo = aplicarDelta(base, {
+      totalInCents: 0,
+      totalOutCents: 0,
+      count: 0,
+      byCategory: {
+        ...porCategoriaVazio(),
+        ...deltaDeRecategorizacao(dados.amountCents, dados.category, 'outros'),
+      },
+    })
+
+    tx.update(ref, {
+      aiOptOut: true,
+      category: 'outros',
+      categorySource: 'user',
+      confidence: null,
+    })
+    tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+  })
+}
+
 export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
   const snap = await adminDb().doc(p.rollup(uid, mes)).get()
   return snap.exists ? (snap.data() as Rollup) : rollupVazio(mes)
+}
+
+export interface InsightDoc {
+  body: InsightBody
+  model: string
+  generatedAt?: { toDate(): Date }
+}
+
+export async function lerInsight(uid: string, mes: string): Promise<InsightDoc | null> {
+  const snap = await adminDb().doc(p.insight(uid, mes)).get()
+  return snap.exists ? (snap.data() as InsightDoc) : null
+}
+
+export async function salvarInsight(
+  uid: string,
+  mes: string,
+  body: InsightBody,
+  model: string
+): Promise<void> {
+  await adminDb().doc(p.insight(uid, mes)).set({
+    body,
+    model,
+    generatedAt: FieldValue.serverTimestamp(),
+  })
 }
 
 /**

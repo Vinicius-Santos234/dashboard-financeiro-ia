@@ -1,36 +1,96 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Dashboard Financeiro
 
-## Getting Started
+Aplicação em Next.js para importar extratos OFX/CSV, categorizar gastos com IA e visualizar o mês sem entregar dados bancários crus a terceiros.
 
-First, run the development server:
+Produção: https://dashboard-financeiro-ia.vercel.app
+
+## Funcionalidades
+
+- autenticação por e-mail e senha com Firebase Auth;
+- sessão SSR em cookie `httpOnly` verificado pelo Admin SDK;
+- importação OFX e CSV com mapeamento de colunas;
+- centavos inteiros, deduplicação por fingerprint e rollup mensal transacional;
+- categorização pelo Gemini em lotes, precedida por regras do usuário;
+- correção manual que aprende uma regra para os próximos meses;
+- pizza clicável, filtros, comparação mensal e insights a partir de agregados;
+- opt-out de IA por transação e exclusão completa da conta.
+
+## Desenvolvimento
+
+Requisitos: Node.js 20 ou superior e um projeto Firebase com Auth por e-mail/senha e Firestore.
 
 ```bash
+npm install
+copy .env.local.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Preencha o `.env.local` com as configurações públicas do app Firebase, a conta de serviço do Admin SDK e, para usar IA, `GEMINI_API_KEY`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Validação:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build
+```
 
-## Learn More
+Os testes de isolamento e de persistência usam o Firebase real quando as variáveis de teste estão preenchidas. Crie as contas descartáveis com:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run seed:usuarios
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Conta demo
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+O seed nunca publica um extrato cru. Ele parte de uma fixture derivada, passa cada descrição pelo mesmo anonimizador da aplicação, desloca as datas e multiplica os valores antes de gravar dois meses:
 
-## Deploy on Vercel
+```bash
+npm run seed:demo
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Defina antes `NEXT_PUBLIC_DEMO_EMAIL` e `NEXT_PUBLIC_DEMO_PASSWORD`. Esses valores são públicos por desenho para permitir que qualquer visitante entre no demo; use uma senha exclusiva e sem reutilização. O script substitui somente a árvore desse usuário demo.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Segurança e isolamento
+
+Todos os dados pertencentes a uma pessoa vivem sob `users/{uid}`. As Security Rules impedem que o SDK cliente leia ou escreva na árvore de outro usuário e validam formato de data, mês, centavos inteiros e categorias.
+
+Há um limite importante: **o Firebase Admin SDK ignora as Security Rules**. No servidor, o isolamento vem da estrutura de `lib/firestore/repo.ts`: toda operação recebe `uid` como primeiro argumento e monta o caminho sob aquele usuário. Não existe uma consulta global de transações que dependa de lembrar um `where userId`.
+
+O cookie de sessão é `httpOnly`, `sameSite=lax` e `secure` em produção. A assinatura e a revogação são verificadas nas páginas, Server Actions e Route Handlers que acessam dados.
+
+## Privacidade e IA
+
+O arquivo enviado é processado em memória e descartado ao fim da requisição; não há bucket de extratos.
+
+Antes de qualquer chamada ao Gemini, o servidor remove CPF, CNPJ, agência, conta, sequências longas, telefone, e-mail, UUID e a contraparte de PIX/TED/DOC/transferência. O payload usa um ID opaco temporário, descrição anonimizada, data e valor em centavos. O vínculo entre ID e documento existe apenas em memória.
+
+O nome do estabelecimento permanece porque é necessário para categorizar. Isso deixa um risco residual: nomes de clínicas, farmácias ou advogados podem revelar informação sensível. A tela de transações permite marcar qualquer lançamento como “não enviar à IA”; nesse caso ele fica em `outros`.
+
+Insights recebem somente totais por categoria do mês atual e anterior, nunca linhas individuais. Dados enviados à Gemini podem ser processados pelo Google fora do Brasil; consulte os termos aplicáveis à modalidade da API usada.
+
+## Exclusão da conta
+
+Em `/conta`, a confirmação `EXCLUIR` executa `recursiveDelete` na árvore `users/{uid}`, depois remove o usuário do Firebase Auth e encerra o cookie de sessão. O uso de `recursiveDelete` é necessário porque excluir apenas o documento pai no Firestore não apaga subcoleções.
+
+## Deploy na Vercel
+
+1. Crie um projeto Firebase separado para produção e publique `firestore.rules` e `firestore.indexes.json`.
+2. Importe o repositório na Vercel.
+3. Cadastre na Vercel todas as variáveis descritas em `.env.local.example`, usando credenciais do projeto de produção.
+4. Não exponha `FIREBASE_PRIVATE_KEY` ou `GEMINI_API_KEY` com prefixo `NEXT_PUBLIC_`.
+5. Depois do primeiro deploy, rode `npm run seed:demo` apontando o ambiente local para o Firebase de produção.
+6. Teste login, importação, opt-out e exclusão com uma conta que não seja a demo.
+
+O modelo padrão é `gemini-3.6-flash`, com suporte a structured output. Ele pode ser trocado por `GEMINI_MODEL` sem alterar o código.
+
+## Estrutura principal
+
+- `app/api/imports`: parsing e persistência;
+- `app/api/categorize`: regras, lotes e Gemini;
+- `app/api/insights`: cache e geração por agregado;
+- `lib/privacy`: fronteira de anonimização;
+- `lib/llm`: abstração do provedor, schemas e Gemini;
+- `lib/firestore`: único acesso servidor ao Firestore;
+- `tests`: parsers, dinheiro, fingerprint, privacidade, IA, rollup e isolamento.
