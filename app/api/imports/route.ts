@@ -12,6 +12,7 @@ import { CsvInvalidoError, inspecionar } from '@/lib/sources/csv'
 import { DataInvalidaError } from '@/lib/sources/date'
 import { ValorInvalidoError } from '@/lib/domain/money'
 import { atribuirFingerprints } from '@/lib/domain/fingerprint'
+import { anonymize } from '@/lib/privacy/anonymize'
 import {
   contaPadrao,
   gravarTransacoes,
@@ -20,15 +21,16 @@ import {
   atualizarImport,
 } from '@/lib/firestore/repo'
 
+export const maxDuration = 60
+
 /**
  * Import de extrato. Spec §5.2.
  *
  * O arquivo **nunca é gravado** em disco nem em bucket: é parseado em memória
  * e descartado ao fim do request. Só as linhas persistem (§7.4, LGPD).
  *
- * Nesta etapa (E2) `descriptionClean` ainda é a própria descrição. O
- * anonimizador entra na E3, que é pré-requisito bloqueante da E4 — nenhuma
- * chamada a LLM acontece aqui.
+ * `descriptionClean` é anonimizada antes da persistência e será anonimizada
+ * novamente na fronteira da LLM. O texto original fica somente no servidor.
  */
 
 /** Teto de §6.3: acima disso o import é recusado com mensagem clara. */
@@ -214,9 +216,7 @@ export async function POST(request: Request) {
         accountId,
         importId,
         source,
-        // E2: ainda sem anonimização. A E3 troca esta linha, e é
-        // pré-requisito bloqueante da E4.
-        descriptionClean: (t) => t.description,
+        descriptionClean: (t) => anonymize(t.description),
       }
     )
 
