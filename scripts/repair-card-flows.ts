@@ -5,6 +5,7 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { adminAuth, adminDb } from '../lib/firebase/admin'
 import {
   classifyFlow,
+  STATEMENT_PROFILES,
   type FlowType,
   type StatementProfile,
 } from '../lib/domain/financial-flow'
@@ -37,25 +38,61 @@ if (credential) {
   process.env.FIREBASE_PRIVATE_KEY = data.private_key
 }
 
-function profileFor(source: string): StatementProfile {
-  return source === 'csv'
-    ? 'credit_card_positive_expenses'
-    : 'credit_card_negative_expenses'
+/**
+ * O perfil é DECLARADO, nunca adivinhado — e isso custou um defeito.
+ *
+ * A versão anterior deduzia do `source`: todo CSV virava fatura "positivo é
+ * compra". Passado num extrato de CONTA CORRENTE, cada despesa (negativa) cai
+ * do lado do crédito e vira `refund`; e `categoriaMigrada`, para estorno,
+ * preserva a categoria que o documento já tinha. O que estava em `outros`
+ * ficava em `outros` para sempre — e, como `category` deixava de ser `null`,
+ * aquelas linhas nunca mais entravam na fila de pendentes, então a IA nunca
+ * mais as revisitava.
+ *
+ * Não há como o script saber que arquivo é aquele: só quem exportou sabe. A
+ * correção é parar de fingir que sabe.
+ */
+function perfilDeclarado(): StatementProfile {
+  const bruto = argument('profile')
+  if (!bruto) {
+    throw new Error(
+      'Informe --profile. O script NÃO adivinha o tipo do extrato.\n' +
+        '  --profile=bank_account                     conta corrente (positivo é entrada)\n' +
+        '  --profile=credit_card_positive_expenses    fatura Nubank (positivo é compra)\n' +
+        '  --profile=credit_card_negative_expenses    fatura em que negativo é compra'
+    )
+  }
+  if (!(STATEMENT_PROFILES as readonly string[]).includes(bruto)) {
+    throw new Error(`--profile inválido: ${bruto}. Use um de: ${STATEMENT_PROFILES.join(', ')}.`)
+  }
+  return bruto as StatementProfile
 }
 
 function migratedCategory(
   flowType: FlowType,
-  data: FirebaseFirestore.DocumentData
+  data: FirebaseFirestore.DocumentData,
+  recategorizar: boolean
 ): Pick<FirebaseFirestore.DocumentData, 'category' | 'categorySource' | 'confidence'> {
+  const pendente = { category: null, categorySource: null, confidence: null }
+
   if (flowType === 'income') {
     return { category: 'receita', categorySource: 'rule', confidence: 1 }
   }
   if (flowType === 'transfer') {
     return { category: 'outros', categorySource: 'rule', confidence: 1 }
   }
-  if (data.category === 'receita') {
-    return { category: null, categorySource: null, confidence: null }
-  }
+  // Categoria de entrada num lançamento que afinal é gasto: sempre inválida.
+  if (data.category === 'receita') return pendente
+
+  // `--recategorizar` devolve à fila o que a IA decidiu sobre o valor com o
+  // sinal errado. Sem isto não há caminho de volta: uma vez que `category`
+  // deixa de ser `null`, a transação nunca mais é pendente, e o palpite errado
+  // fica gravado para sempre.
+  //
+  // Só o que veio da IA. Escolha manual do usuário é dado, não palpite — e
+  // regra tem dono e volta sozinha.
+  if (recategorizar && data.categorySource === 'ai') return pendente
+
   return {
     category: data.category ?? null,
     categorySource: data.categorySource ?? null,
@@ -110,6 +147,8 @@ async function main() {
   const expectedProject = argument('project')?.trim()
   const filenames = new Set(argumentsFor('file'))
   const apply = process.argv.includes('--apply')
+  const recategorizar = process.argv.includes('--recategorizar')
+  const financialProfile = perfilDeclarado()
 
   if (!email || filenames.size === 0) {
     throw new Error('Informe --email e pelo menos um --file. Sem isso nada é alterado.')
@@ -156,16 +195,33 @@ async function main() {
 
   const changes = targetTransactions.map((doc) => {
     const data = doc.data()
-    const importData = importsById.get(data.importId)!
-    const financialProfile = profileFor(importData.source)
     const flowType = classifyFlow(
       { amountCents: data.amountCents, description: data.descriptionRaw },
       financialProfile
     )
-    const update = { flowType, ...migratedCategory(flowType, data) }
+    const update = { flowType, ...migratedCategory(flowType, data, recategorizar) }
     projected.set(doc.id, { ...data, ...update })
     return { doc, update, financialProfile }
   })
+
+  // A GUARDA QUE FALTAVA.
+  //
+  // Extrato de conta corrente passado por um perfil de cartão produz uma
+  // distribuição absurda: quase tudo vira `refund`, porque toda despesa cai do
+  // lado errado. Essa distribuição é a assinatura do perfil errado, e ela
+  // aparece ANTES de qualquer escrita — basta olhar.
+  const proporcaoDeEstorno = changes.length
+    ? changes.filter(({ update }) => update.flowType === 'refund').length / changes.length
+    : 0
+  if (proporcaoDeEstorno > 0.5 && !process.argv.includes('--aceito-a-distribuicao')) {
+    throw new Error(
+      `${Math.round(proporcaoDeEstorno * 100)}% das transações viraram estorno com ` +
+        `--profile=${financialProfile}. Isso é a assinatura do perfil errado: num ` +
+        'extrato de verdade, estorno é exceção.\n' +
+        'Confira o perfil. Se for mesmo assim, repita com --aceito-a-distribuicao. ' +
+        'Nada foi alterado.'
+    )
+  }
 
   const affectedMonths = [...new Set(changes.map(({ doc }) => doc.data().month as string))].sort()
   const projectedRollups = new Map(affectedMonths.map((month) => {
@@ -200,6 +256,9 @@ async function main() {
 
   console.log(JSON.stringify({
     mode: apply ? 'apply' : 'dry-run',
+    profile: financialProfile,
+    recategorizar,
+    voltamParaAFila: changes.filter(({ update }) => update.category === null).length,
     projectId: process.env.FIREBASE_PROJECT_ID,
     uid: user.uid,
     email: user.email,
@@ -238,7 +297,6 @@ async function main() {
   const escritasDeOrigem: Escrita[] = [
     ...changes.map(({ doc, update }) => ({ tipo: 'update' as const, ref: doc.ref, dados: update })),
     ...imports.map((doc) => {
-      const financialProfile = profileFor(doc.data().source)
       const hasPending = changes.some(({ doc: transaction, update }) =>
         transaction.data().importId === doc.id && update.category === null
       )

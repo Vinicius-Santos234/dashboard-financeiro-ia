@@ -116,10 +116,27 @@ Se você importar **a conta corrente e a fatura do mesmo cartão**, o pagamento 
 Transações gravadas antes desta versão não têm `flowType` e foram interpretadas pela convenção de conta corrente. O script abaixo reclassifica **apenas os arquivos que você nomear**, e roda em modo simulação por padrão:
 
 ```bash
-npm run repair:card-flows -- --email=voce@exemplo.com --file=fatura.csv
+npm run repair:card-flows -- --email=voce@exemplo.com --file=fatura.csv   --profile=credit_card_positive_expenses
 ```
 
-Ele imprime o que faria — contagem por tipo e os totais projetados de cada mês. Para aplicar, acrescente `--apply` e `--project=<id-do-firebase>`; o `--project` existe para o comando falhar se o ambiente carregado não for o que você pensa. Antes de escrever, ele salva um backup em `.local-backups/` (ignorado pelo git, contém dados reais), recalcula os rollups do mês inteiro e apaga os insights daqueles meses, que foram gerados sobre os números antigos.
+**`--profile` é obrigatório e o script não adivinha.** Só quem exportou o arquivo sabe que arquivo é aquele; a versão anterior deduzia do formato — todo CSV virava fatura de cartão — e passada num extrato de conta corrente reclassificava **todas** as despesas como estorno, o que as tirava da fila de pendentes de vez.
+
+Duas travas fecham o resto:
+
+- se mais da metade das transações virar estorno, o comando **para**. Essa distribuição é a assinatura do perfil errado, porque num extrato de verdade estorno é exceção. `--aceito-a-distribuicao` passa por cima, se for mesmo o caso;
+- `--apply` exige `--project=<id-do-firebase>`, para o comando falhar se o ambiente carregado não for o que você pensa.
+
+Ele imprime o que faria — contagem por tipo e os totais projetados de cada mês — e só escreve com `--apply`. Antes de escrever, salva um backup em `.local-backups/` (ignorado pelo git, contém dados reais), recalcula os rollups do mês inteiro e apaga os insights daqueles meses, gerados sobre os números antigos.
+
+### Devolver transações à fila da IA
+
+`--recategorizar` zera a categoria do que foi **decidido pela IA** sobre um valor com o sinal errado, para que a categorização rode de novo:
+
+```bash
+npm run repair:card-flows -- --email=voce@exemplo.com --file=extrato.csv   --profile=bank_account --recategorizar
+```
+
+Escolha manual sua e regra que você criou não são tocadas — aquilo é dado, não palpite. Sem esta opção não existe caminho de volta: assim que `category` deixa de ser nulo, a transação nunca mais é pendente, e o palpite errado fica gravado para sempre.
 
 ## Exclusão da conta
 
