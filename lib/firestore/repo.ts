@@ -457,13 +457,13 @@ export async function listarTransacoesDoImport(uid: string, importId: string) {
     .where('importId', '==', importId)
     .get()
 
-  return snap.docs.map((d) => ({ fingerprint: d.id, ...(d.data() as TransactionDoc) }))
+  return snap.docs.map(paraTransacao)
 }
 
 export async function obterTransacao(uid: string, fingerprint: string) {
   const snap = await adminDb().doc(p.transacao(uid, fingerprint)).get()
   return snap.exists
-    ? { fingerprint: snap.id, ...(snap.data() as TransactionDoc) }
+    ? paraTransacao(snap)
     : null
 }
 
@@ -690,6 +690,41 @@ export async function recalcularRollup(uid: string, mes: string): Promise<Rollup
   })
 }
 
+/**
+ * O que sai daqui é sempre um objeto simples, e nunca o documento cru.
+ *
+ * O documento gravado tem `createdAt` como `Timestamp` do Firestore — uma
+ * CLASSE, que não atravessa a fronteira Server → Client Component. Espalhar
+ * `d.data()` fazia o tipo mentir (dizia `TransactionDoc`, entregava
+ * `TransactionDoc` + extras) e quebrava a tela no instante em que alguma linha
+ * virasse componente de cliente. Foi exatamente o que aconteceu.
+ *
+ * Escolher campo a campo é mais verboso e é o que torna o tipo verdadeiro.
+ */
+export interface TransacaoLida extends TransactionDoc {
+  fingerprint: string
+}
+
+function paraTransacao(d: FirebaseFirestore.DocumentSnapshot): TransacaoLida {
+  const t = d.data() as TransactionDoc
+  return {
+    fingerprint: d.id,
+    accountId: t.accountId,
+    importId: t.importId,
+    occurredOn: t.occurredOn,
+    month: t.month,
+    amountCents: t.amountCents,
+    descriptionRaw: t.descriptionRaw,
+    descriptionClean: t.descriptionClean,
+    fitid: t.fitid,
+    category: t.category,
+    categorySource: t.categorySource,
+    confidence: t.confidence,
+    source: t.source,
+    aiOptOut: t.aiOptOut,
+  }
+}
+
 export async function listarTransacoesDoMes(uid: string, mes: string) {
   const snap = await adminDb()
     .collection(p.transacoes(uid))
@@ -697,7 +732,7 @@ export async function listarTransacoesDoMes(uid: string, mes: string) {
     .orderBy('occurredOn', 'desc')
     .get()
 
-  return snap.docs.map((d) => ({ fingerprint: d.id, ...(d.data() as TransactionDoc) }))
+  return snap.docs.map(paraTransacao)
 }
 
 export async function contarTransacoes(uid: string): Promise<number> {

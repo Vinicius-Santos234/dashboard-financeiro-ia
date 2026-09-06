@@ -58,16 +58,29 @@ export function isCategoria(v: unknown): v is Categoria {
   return typeof v === 'string' && (CATEGORIAS as readonly string[]).includes(v)
 }
 
-/** Cor por categoria. Definida aqui para pizza, legenda e badge não divergirem. */
+/**
+ * Cor por categoria. Definida aqui para pizza, legenda e badge não divergirem.
+ *
+ * **Esta é a única cor do app.** A interface é monocromática quente de
+ * propósito (ver `app/globals.css`), então nada compete com estes dez tons — e
+ * é por isso que eles ficam legíveis mesmo sendo discretos.
+ *
+ * Refeitos para fundo escuro. A paleta anterior tinha sido escolhida para
+ * fundo claro e embarrava sobre o carvão: cor saturada sobre escuro vira neon,
+ * e cor clara demais some. O ponto de equilíbrio são **tons de joia
+ * dessaturados**, todos numa faixa de luminosidade parecida — assim nenhuma
+ * fatia da pizza grita mais alto que as outras, e o conjunto lê como uma
+ * paleta e não como dez cores soltas.
+ */
 export const CATEGORIA_COR: Record<Categoria, string> = {
-  alimentacao: '#e8734a',
-  transporte: '#4a90d9',
-  moradia: '#8b6bb1',
-  saude: '#3fa796',
-  lazer: '#e0a33e',
-  educacao: '#5c7cbb',
-  compras: '#c25e8a',
-  contas_fixas: '#6b7a8f',
-  receita: '#4aa564',
-  outros: '#9aa0a6',
+  alimentacao: '#d98b5f', // terracota
+  transporte: '#7ba3c9', // azul empoeirado
+  moradia: '#a68bc4', // violeta suave
+  saude: '#6fb3a3', // verde-água
+  lazer: '#d4b072', // ocre
+  educacao: '#8296c9', // pervinca
+  compras: '#c98aa4', // rosa antigo
+  contas_fixas: '#8a9199', // ardósia
+  receita: '#7fb884', // sálvia — a mesma do token `--entrada`
+  outros: '#6e6862', // cinza quente
 }

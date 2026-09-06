@@ -1,15 +1,15 @@
 import { exigirSessao } from '@/lib/firebase/session'
 import { listarTransacoesDoMes, lerRollup } from '@/lib/firestore/repo'
 import { formatCents } from '@/lib/domain/money'
-import { CATEGORIAS, CATEGORIA_LABEL, type Categoria } from '@/lib/domain/categories'
-import { sugerirPadrao } from '@/lib/domain/rules'
+import { CATEGORIAS, CATEGORIA_COR, CATEGORIA_LABEL, type Categoria } from '@/lib/domain/categories'
 import { mesAnterior, mesAtual, mesLegivel, mesSeguinte, mesValido } from '@/lib/domain/month'
-import { alterarOptOut, corrigirCategoria } from './actions'
+import { Numero } from '../numero'
+import { LinhaTransacao } from './linha'
 
 export default async function TransacoesPage({
   searchParams,
 }: PageProps<'/transacoes'>) {
-  const { uid } = await exigirSessao()
+  const { uid, demo } = await exigirSessao()
 
   const params = await searchParams
   const bruto = typeof params.mes === 'string' ? params.mes : null
@@ -28,157 +28,132 @@ export default async function TransacoesPage({
     ? todas.filter((transacao) => (transacao.category ?? 'outros') === categoria)
     : todas
 
+  const saldo = rollup.totalInCents + rollup.totalOutCents
+
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+    <div className="flex flex-col gap-10">
+      <header className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Transações</h1>
-          <p className="mt-1 text-sm text-neutral-500">{mesLegivel(mes)}</p>
+          <p className="rotulo">Lançamentos</p>
+          <h1 className="mt-2 font-display text-4xl leading-none tracking-tight sm:text-5xl">
+            {mesLegivel(mes)}
+          </h1>
         </div>
 
-        <nav className="flex items-center gap-2 text-sm">
+        {/* Navegação de mês como setas discretas: mudar de mês é o gesto mais
+            repetido desta tela, e um formulário com botão "Filtrar" para isso
+            seria peso demais. */}
+        <nav className="flex items-center gap-1 text-sm">
           <a
-            href={`/transacoes?mes=${mesAnterior(mes)}`}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            href={`/transacoes?mes=${mesAnterior(mes)}${categoria ? `&categoria=${categoria}` : ''}`}
+            className="px-3 py-2 text-suave transition-colors duration-300 hover:text-texto"
+            aria-label="Mês anterior"
           >
-            ← anterior
+            ←
           </a>
           <a
-            href={`/transacoes?mes=${mesSeguinte(mes)}`}
-            className="rounded-md border border-neutral-300 px-3 py-1.5 hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+            href={`/transacoes?mes=${mesSeguinte(mes)}${categoria ? `&categoria=${categoria}` : ''}`}
+            className="px-3 py-2 text-suave transition-colors duration-300 hover:text-texto"
+            aria-label="Mês seguinte"
           >
-            seguinte →
+            →
           </a>
         </nav>
-      </div>
+      </header>
 
-      <form className="flex flex-wrap items-end gap-3" method="get">
-        <input type="hidden" name="mes" value={mes} />
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-neutral-500">Categoria</span>
-          <select
-            name="categoria"
-            defaultValue={categoria ?? ''}
-            className="rounded-md border border-neutral-300 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-950"
+      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-3">
+        <Numero rotulo="Entradas" valor={formatCents(rollup.totalInCents)} entrada />
+        <Numero rotulo="Saídas" valor={formatCents(rollup.totalOutCents)} />
+        <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
+      </section>
+
+      {/* O filtro de categoria virou uma fileira de pílulas, e não um select
+          com botão. São dez opções fixas — deixá-las visíveis é mais rápido de
+          usar e mostra de cara o que existe. */}
+      <nav className="flex flex-wrap gap-x-1 gap-y-2 text-sm">
+        <Pilula href={`/transacoes?mes=${mes}`} ativa={categoria === null}>
+          Todas
+        </Pilula>
+        {CATEGORIAS.map((item) => (
+          <Pilula
+            key={item}
+            href={`/transacoes?mes=${mes}&categoria=${item}`}
+            ativa={categoria === item}
+            cor={CATEGORIA_COR[item]}
           >
-            <option value="">Todas</option>
-            {CATEGORIAS.map((item) => (
-              <option value={item} key={item}>{CATEGORIA_LABEL[item]}</option>
-            ))}
-          </select>
-        </label>
-        <button className="rounded-md border border-neutral-300 px-3 py-2 text-sm dark:border-neutral-700">
-          Filtrar
-        </button>
-      </form>
+            {CATEGORIA_LABEL[item]}
+          </Pilula>
+        ))}
+      </nav>
 
       {transacoes.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-neutral-300 p-10 text-center dark:border-neutral-700">
-          <p className="text-sm text-neutral-500">
-            Nenhuma transação em {mesLegivel(mes)}.
+        <div className="border border-dashed border-linha px-8 py-16 text-center">
+          <p className="text-sm text-suave">
+            {categoria
+              ? `Nenhuma transação em ${CATEGORIA_LABEL[categoria]} neste mês.`
+              : `Nenhuma transação em ${mesLegivel(mes)}.`}
           </p>
-          <a
-            href="/importar"
-            className="mt-2 inline-block text-sm underline underline-offset-4"
-          >
-            Importar um extrato
-          </a>
+          {!categoria && (
+            <a
+              href="/importar"
+              className="mt-3 inline-block text-sm text-texto underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:decoration-texto"
+            >
+              Importar um extrato
+            </a>
+          )}
         </div>
       ) : (
-        <>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <Cartao rotulo="Entradas" valor={formatCents(rollup.totalInCents)} />
-            <Cartao rotulo="Saídas" valor={formatCents(rollup.totalOutCents)} />
-            <Cartao
-              rotulo="Saldo"
-              valor={formatCents(rollup.totalInCents + rollup.totalOutCents)}
-            />
+        <section>
+          <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-x-6 border-b border-linha pb-3">
+            <span className="rotulo">Data</span>
+            <span className="rotulo">Descrição</span>
+            <span className="rotulo text-right">Valor</span>
           </div>
 
-          <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-neutral-200 text-neutral-500 dark:border-neutral-800">
-                <tr>
-                  <th className="px-4 py-2.5 font-medium">Data</th>
-                  <th className="px-4 py-2.5 font-medium">Descrição</th>
-                  <th className="min-w-80 px-4 py-2.5 font-medium">Categoria e regra</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Valor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transacoes.map((t) => (
-                  <tr
-                    key={t.fingerprint}
-                    className="border-b border-neutral-100 last:border-0 dark:border-neutral-900"
-                  >
-                    <td className="whitespace-nowrap px-4 py-2.5 tabular-nums text-neutral-500">
-                      {t.occurredOn.split('-').reverse().join('/')}
-                    </td>
-                    <td className="px-4 py-2.5">{t.descriptionRaw}</td>
-                    <td className="px-4 py-2.5 align-top">
-                      <form action={corrigirCategoria} className="flex flex-wrap items-center gap-2">
-                        <input type="hidden" name="fingerprint" value={t.fingerprint} />
-                        <select
-                          name="category"
-                          defaultValue={t.category ?? 'outros'}
-                          aria-label={`Categoria de ${t.descriptionRaw}`}
-                          className="rounded border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950"
-                        >
-                          {(t.amountCents >= 0 ? ['receita'] as const : CATEGORIAS).map((item) => (
-                            <option value={item} key={item}>{CATEGORIA_LABEL[item]}</option>
-                          ))}
-                        </select>
-                        <input
-                          name="pattern"
-                          defaultValue={sugerirPadrao(t.descriptionClean)}
-                          aria-label="Padrão para próximas transações"
-                          title="Edite ou apague para não criar uma regra"
-                          className="min-w-40 flex-1 rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-950"
-                        />
-                        <button className="rounded bg-neutral-900 px-2 py-1 text-xs text-white dark:bg-neutral-100 dark:text-neutral-900">
-                          Salvar
-                        </button>
-                      </form>
-                      <div className="mt-1 flex items-center gap-2 text-xs text-neutral-500">
-                        <span>{t.categorySource ? `origem: ${t.categorySource}` : 'não categorizada'}</span>
-                        <form action={alterarOptOut}>
-                          <input type="hidden" name="fingerprint" value={t.fingerprint} />
-                          <input type="hidden" name="optOut" value={String(!t.aiOptOut)} />
-                          <button className="underline underline-offset-2">
-                            {t.aiOptOut ? 'permitir IA' : 'não enviar à IA'}
-                          </button>
-                        </form>
-                      </div>
-                    </td>
-                    <td
-                      className={`whitespace-nowrap px-4 py-2.5 text-right tabular-nums ${
-                        t.amountCents >= 0
-                          ? 'text-emerald-700 dark:text-emerald-400'
-                          : ''
-                      }`}
-                    >
-                      {formatCents(t.amountCents)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <ul>
+            {transacoes.map((t) => (
+              <LinhaTransacao key={t.fingerprint} transacao={t} demo={demo} />
+            ))}
+          </ul>
 
-          <p className="text-sm text-neutral-500">
-            {transacoes.length} transação(ões){categoria ? ` em ${CATEGORIA_LABEL[categoria]}` : ''}.
+          <p className="mt-6 text-xs text-fraco">
+            {transacoes.length} lançamento{transacoes.length === 1 ? '' : 's'}
+            {categoria ? ` em ${CATEGORIA_LABEL[categoria]}` : ''}
           </p>
-        </>
+        </section>
       )}
     </div>
   )
 }
 
-function Cartao({ rotulo, valor }: { rotulo: string; valor: string }) {
+function Pilula({
+  href,
+  ativa,
+  cor,
+  children,
+}: {
+  href: string
+  ativa: boolean
+  cor?: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-      <p className="text-sm text-neutral-500">{rotulo}</p>
-      <p className="mt-1 text-2xl font-semibold tabular-nums">{valor}</p>
-    </div>
+    <a
+      href={href}
+      className={`flex items-center gap-2 rounded-full border px-3 py-1.5 transition-colors duration-300 ${
+        ativa
+          ? 'border-texto text-texto'
+          : 'border-linha text-suave hover:border-linha-forte hover:text-texto'
+      }`}
+    >
+      {cor && (
+        <span
+          aria-hidden
+          className="size-1.5 rounded-full"
+          style={{ background: cor }}
+        />
+      )}
+      {children}
+    </a>
   )
 }

@@ -2,129 +2,169 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* ==========================================================================
+   Sistema visual — tema único, escuro.
+   ==========================================================================
+
+   A referência: loja ou restaurante caro de cidade grande. Predominantemente
+   escuro, poucos detalhes claros, madeira ou porcelana escura, luz amarelada.
+
+   Três decisões carregam a coisa toda:
+
+   1. NÃO É PRETO. É um carvão quente. Preto puro (#000) em tela cheia lê como
+      terminal ou protetor de OLED — nunca como material caro. O fundo tem um
+      fundo amarronzado quase imperceptível num swatch e evidente numa tela.
+
+   2. A LUZ QUENTE NÃO DOURA AS COISAS, ELA AQUECE OS BRANCOS. Por isso o texto
+      é creme e nunca #FFF. É daí que vem a sensação de lâmpada de filamento,
+      sem precisar de um acento amarelo.
+
+   3. COR É SIGNIFICADO. A interface inteira é monocromática quente; a única
+      cor do app está nos DADOS. Sem acento colorido competindo, a pizza de
+      categorias e os valores carregam todo o peso cromático e viram a coisa
+      mais legível da tela. É também o que impede o clássico dourado-sobre-preto,
+      que é o visual de todo site de cripto duvidoso.
+   ========================================================================== */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --color-fundo: var(--fundo);
+  --color-superficie: var(--superficie);
+  --color-elevado: var(--elevado);
+  --color-texto: var(--texto);
+  --color-suave: var(--suave);
+  --color-fraco: var(--fraco);
+  --color-linha: var(--linha);
+  --color-linha-forte: var(--linha-forte);
+  --color-entrada: var(--entrada);
+  --color-alarme: var(--alarme);
+
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --font-display: var(--font-display);
+
+  /* Compatibilidade com o shadcn/ui, mapeada para os tokens acima. */
+  --color-background: var(--fundo);
+  --color-foreground: var(--texto);
+  --color-card: var(--superficie);
+  --color-card-foreground: var(--texto);
+  --color-popover: var(--elevado);
+  --color-popover-foreground: var(--texto);
+  --color-primary: var(--texto);
+  --color-primary-foreground: var(--fundo);
+  --color-secondary: var(--elevado);
+  --color-secondary-foreground: var(--texto);
+  --color-muted: var(--superficie);
+  --color-muted-foreground: var(--suave);
+  --color-accent: var(--elevado);
+  --color-accent-foreground: var(--texto);
+  --color-destructive: var(--alarme);
+  --color-border: var(--linha);
+  --color-input: var(--linha-forte);
+  --color-ring: var(--suave);
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  color-scheme: dark;
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Superfícies — cada degrau é "mais perto da luz", não "mais cinza". */
+  --fundo: #0b0a09;
+  --superficie: #131110;
+  --elevado: #1a1715;
+
+  /* Texto — creme, nunca branco puro. */
+  --texto: #f5f1ea;
+  --suave: #a8a099;
+  --fraco: #6b6560;
+
+  /* Hairlines. rgba e não cinza sólido: é uma aresta pegando luz, não um
+     traço desenhado — que é exatamente a metáfora física. */
+  --linha: rgb(255 255 255 / 0.06);
+  --linha-forte: rgb(255 255 255 / 0.12);
+
+  /* As duas únicas cores fora dos dados. */
+  --entrada: #7fb884; /* verde sálvia, discreto */
+  --alarme: #c96f5e; /* reservado para alarme de verdade */
+
+  --radius: 0.5rem;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
-  body {
-    @apply bg-background text-foreground;
-  }
+
   html {
     @apply font-sans;
+    /* Nada de scroll bruto: o app inteiro se move devagar. */
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--fundo);
+    color: var(--texto);
+    /* Grão sutilíssimo sobre o fundo.
+       É o que impede uma área escura grande de parecer preto chapado e
+       barato — o equivalente ao veio da madeira ou ao poro da porcelana.
+       Acima de ~4% começa a parecer sujeira, não material. */
+    background-image: radial-gradient(
+      rgb(255 255 255 / 0.018) 0.5px,
+      transparent 0.5px
+    );
+    background-size: 3px 3px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: var(--linha-forte);
+    color: var(--texto);
+  }
+
+  /* Foco visível sem anel colorido: luminosidade basta. */
+  :focus-visible {
+    outline: 1px solid var(--suave);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Rótulo em caixa alta com tracking largo — energia de menu de restaurante.
+     É o detalhe que mais entrega "caro" por unidade de esforço. */
+  .rotulo {
+    @apply text-[0.6875rem] font-medium uppercase tracking-[0.14em];
+    color: var(--fraco);
+  }
+
+  /* Superfície elevada.
+     Sem drop-shadow: sombra não lê no escuro. A elevação vem de a superfície
+     ficar MAIS CLARA e de uma hairline superior mais brilhante — luz vindo de
+     cima, que é como aqueles lugares são iluminados. */
+  .superficie {
+    background-color: var(--superficie);
+    border: 1px solid var(--linha);
+    border-top-color: rgb(255 255 255 / 0.09);
+    border-radius: var(--radius);
+  }
+
+  .superficie-interativa {
+    transition:
+      background-color 300ms cubic-bezier(0.22, 1, 0.36, 1),
+      border-color 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .superficie-interativa:hover {
+    background-color: var(--elevado);
+    border-color: var(--linha-forte);
+  }
+
+  /* Números de dinheiro: tabular sempre, senão as colunas dançam. */
+  .valor {
+    @apply tabular-nums;
+    font-feature-settings: "tnum" 1, "ss01" 1;
+    letter-spacing: -0.01em;
   }
 }

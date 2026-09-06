@@ -12,7 +12,7 @@ import {
 } from 'firebase/auth'
 import { auth } from '@/lib/firebase/client'
 import { abrirSessao, type EstadoAuth } from './actions'
-import { Button } from '@/components/ui/button'
+import { Marca } from '@/components/marca'
 
 const INICIAL: EstadoAuth = {}
 
@@ -102,21 +102,25 @@ function Formulario() {
   const erro = erroLocal ?? estado.erro
 
   return (
-    <div className="flex w-full max-w-sm flex-col gap-4">
+    <div className="flex w-full max-w-sm flex-col gap-10">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Dashboard Financeiro
+        <Marca size={36} className="mb-8 text-suave" />
+        <p className="rotulo">Finanças pessoais</p>
+        <h1 className="mt-3 font-display text-[2.75rem] leading-[1.05] tracking-tight">
+          Dashboard
+          <br />
+          Financeiro
         </h1>
-        <p className="mt-1 text-sm text-neutral-500">
+        <p className="mt-4 text-sm leading-relaxed text-suave">
           {modo === 'entrar'
-            ? 'Entre para ver seus gastos.'
-            : 'Crie uma conta para começar.'}
+            ? 'Importe o extrato do seu banco e veja para onde o dinheiro foi.'
+            : 'Crie uma conta para começar a acompanhar seus gastos.'}
         </p>
       </div>
 
-      <form onSubmit={autenticar} className="flex flex-col gap-4">
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium">E-mail</span>
+      <form onSubmit={autenticar} className="flex flex-col gap-6">
+        <label className="flex flex-col gap-2">
+          <span className="rotulo">E-mail</span>
           <input
             name="email"
             type="email"
@@ -124,12 +128,15 @@ function Formulario() {
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
             required
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:focus:border-neutral-100"
+            // Campo como linha, não como caixa: sublinhado que acende ao focar.
+            // Caixa com borda nos quatro lados é o que faz um formulário
+            // parecer cadastro de sistema interno.
+            className="border-b border-linha-forte bg-transparent py-2 text-sm outline-none transition-colors duration-300 focus:border-texto"
           />
         </label>
 
-        <label className="flex flex-col gap-1.5 text-sm">
-          <span className="font-medium">Senha</span>
+        <label className="flex flex-col gap-2">
+          <span className="rotulo">Senha</span>
           <input
             name="senha"
             type="password"
@@ -138,55 +145,58 @@ function Formulario() {
             autoComplete={modo === 'entrar' ? 'current-password' : 'new-password'}
             required
             minLength={6}
-            className="rounded-md border border-neutral-300 px-3 py-2 text-sm outline-none focus:border-neutral-900 dark:border-neutral-700 dark:focus:border-neutral-100"
+            className="border-b border-linha-forte bg-transparent py-2 text-sm outline-none transition-colors duration-300 focus:border-texto"
           />
         </label>
 
         {erro && (
-          <p
-            role="alert"
-            className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950 dark:text-red-300"
-          >
+          <p role="alert" className="text-sm" style={{ color: 'var(--alarme)' }}>
             {erro}
           </p>
         )}
 
-        <Button type="submit" disabled={ocupado}>
+        <button
+          type="submit"
+          disabled={ocupado}
+          className="mt-2 w-full bg-texto px-6 py-3 text-sm font-medium text-fundo transition-opacity duration-300 hover:opacity-85 disabled:opacity-40"
+        >
           {ocupado ? 'Aguarde…' : modo === 'entrar' ? 'Entrar' : 'Criar conta'}
-        </Button>
+        </button>
       </form>
 
-      {process.env.NEXT_PUBLIC_DEMO_EMAIL && process.env.NEXT_PUBLIC_DEMO_PASSWORD && (
+      <div className="flex flex-col gap-4 border-t border-linha pt-6">
+        {process.env.NEXT_PUBLIC_DEMO_EMAIL && process.env.NEXT_PUBLIC_DEMO_PASSWORD && (
+          <button
+            type="button"
+            onClick={() => {
+              setModo('entrar')
+              setEmail(process.env.NEXT_PUBLIC_DEMO_EMAIL ?? '')
+              setSenha(process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? '')
+              setErroLocal(null)
+            }}
+            className="w-full border border-linha-forte px-6 py-3 text-sm text-suave transition-colors duration-300 hover:border-texto hover:text-texto"
+          >
+            Entrar na demonstração
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => {
-            setModo('entrar')
-            setEmail(process.env.NEXT_PUBLIC_DEMO_EMAIL ?? '')
-            setSenha(process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? '')
+            setModo(modo === 'entrar' ? 'cadastrar' : 'entrar')
             setErroLocal(null)
           }}
-          className="rounded-md border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-50 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          className="text-sm text-fraco underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-suave"
         >
-          Preencher conta demo
+          {modo === 'entrar' ? 'Não tenho conta' : 'Já tenho conta'}
         </button>
-      )}
+      </div>
 
       {/* Segundo formulário, invisível: leva só o ID token ao servidor. */}
       <form ref={formRef} action={enviarSessao} className="hidden">
         <input ref={tokenRef} type="hidden" name="idToken" />
         <input type="hidden" name="proximo" value={proximo} />
       </form>
-
-      <button
-        type="button"
-        onClick={() => {
-          setModo(modo === 'entrar' ? 'cadastrar' : 'entrar')
-          setErroLocal(null)
-        }}
-        className="text-sm text-neutral-500 underline-offset-4 hover:underline"
-      >
-        {modo === 'entrar' ? 'Não tenho conta' : 'Já tenho conta'}
-      </button>
     </div>
   )
 }

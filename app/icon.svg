@@ -1,0 +1,25 @@
+<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    O favicon, e ele NÃO é a marca inteira.
+
+    A marca tem duas moedas e uma seta. A 16px — que é o tamanho real de uma
+    aba — isso vira três traços indistinguíveis. Favicon não conta história,
+    ele serve para reconhecer a aba de relance, e a moeda sozinha faz isso em
+    qualquer tamanho.
+
+    O fundo escuro também é necessário, não é enfeite: o traço creme sobre
+    transparente sumiria numa barra de abas clara.
+  -->
+  <rect width="64" height="64" rx="14" fill="#0B0A09" />
+  <circle cx="32" cy="32" r="20" stroke="#F5F1EA" stroke-width="4" />
+  <circle cx="32" cy="32" r="14.5" stroke="#F5F1EA" stroke-width="1.5" opacity="0.55" />
+  <text
+    x="32"
+    y="41"
+    font-family="Arial, Helvetica, sans-serif"
+    font-size="24"
+    font-weight="700"
+    fill="#F5F1EA"
+    text-anchor="middle"
+  >$</text>
+</svg>

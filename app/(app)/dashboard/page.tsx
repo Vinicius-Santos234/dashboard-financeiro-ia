@@ -3,11 +3,12 @@ import { lerInsight, lerRollup } from '@/lib/firestore/repo'
 import { formatCents } from '@/lib/domain/money'
 import { CATEGORIAS, CATEGORIA_COR, CATEGORIA_LABEL } from '@/lib/domain/categories'
 import { mesAnterior, mesAtual, mesLegivel, mesValido } from '@/lib/domain/month'
+import { Numero } from '../numero'
 import { CategoryChart, type FatiaCategoria } from './category-chart'
 import { InsightsPanel } from './insights-panel'
 
 export default async function DashboardPage({ searchParams }: PageProps<'/dashboard'>) {
-  const { uid, email } = await exigirSessao()
+  const { uid } = await exigirSessao()
   const params = await searchParams
 
   const mes = mesValido(params.mes) ? params.mes : mesAtual()
@@ -29,80 +30,123 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
 
   const maior = [...fatias].sort((a, b) => b.value - a.value)[0]
   const saldo = rollup.totalInCents + rollup.totalOutCents
+  const gastos = CATEGORIAS.filter((c) => c !== 'receita')
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <p className="mt-1 text-sm text-neutral-500">{email} · {mesLegivel(mes)}</p>
-      </div>
+    <div className="flex flex-col gap-12">
+      {/* Cabeçalho: o mês é o assunto da página, então ele é o título — em
+          serifada e grande. O seletor fica discreto ao lado, porque trocar de
+          mês é ação secundária. */}
+      <header className="flex flex-wrap items-end justify-between gap-6">
+        <div>
+          <p className="rotulo">Resumo do mês</p>
+          <h1 className="mt-2 font-display text-4xl leading-none tracking-tight sm:text-5xl">
+            {mesLegivel(mes)}
+          </h1>
+        </div>
 
-      <form className="flex items-end gap-3" method="get">
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-neutral-500">Mês</span>
+        <form className="flex items-center gap-2" method="get">
           <input
             type="month"
             name="mes"
             defaultValue={mes}
-            className="rounded-md border border-neutral-300 bg-white px-3 py-2 dark:border-neutral-700 dark:bg-neutral-950"
+            aria-label="Mês"
+            className="superficie superficie-interativa px-3 py-2 text-sm text-suave"
           />
-        </label>
-        <button className="rounded-md bg-neutral-900 px-4 py-2 text-sm text-white dark:bg-neutral-100 dark:text-neutral-900">
-          Ver período
-        </button>
-      </form>
+          <button className="rounded-md border border-linha-forte px-4 py-2 text-sm text-suave transition-colors duration-300 hover:border-texto hover:text-texto">
+            Ver
+          </button>
+        </form>
+      </header>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Cartao rotulo="Total gasto" valor={formatCents(Math.abs(rollup.totalOutCents))} />
-        <Cartao rotulo="Total recebido" valor={formatCents(rollup.totalInCents)} />
-        <Cartao rotulo="Saldo" valor={formatCents(saldo)} destaque={saldo >= 0} />
-        <Cartao rotulo="Maior categoria" valor={maior?.label ?? '—'} detalhe={maior ? formatCents(maior.value) : undefined} />
-      </div>
+      {/* Os quatro números.
+          Sem cartões com borda: as hairlines verticais bastam para separar, e
+          borda em tudo é o que mais "aperta" uma interface. O valor em tamanho
+          grande e peso leve — número grande e pesado grita; grande e leve tem
+          dinheiro. */}
+      {/* O `bg-linha` do pai aparece pelos vãos de 1px do `gap-px` e vira a
+          divisória — sem desenhar borda em célula nenhuma, que é o que
+          duplicaria traço nos encontros. */}
+      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
+        <Numero rotulo="Total gasto" valor={formatCents(Math.abs(rollup.totalOutCents))} />
+        <Numero rotulo="Total recebido" valor={formatCents(rollup.totalInCents)} entrada />
+        <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
+        <Numero
+          rotulo="Maior categoria"
+          valor={maior?.label ?? '—'}
+          detalhe={maior ? formatCents(maior.value) : undefined}
+          cor={maior ? CATEGORIA_COR[maior.category] : undefined}
+        />
+      </section>
 
-      <div className="rounded-lg border border-neutral-200 p-6 dark:border-neutral-800">
-        <h2 className="text-base font-semibold">Gastos por categoria</h2>
-        <p className="mt-1 text-sm text-neutral-500">Clique em uma fatia para ver as transações.</p>
-        {fatias.length === 0 ? (
-          <p className="mt-2 text-sm text-neutral-500">
-            Nenhum gasto neste mês ainda. Importe um extrato para começar.
-          </p>
-        ) : (
-          <CategoryChart data={fatias} month={mes} />
-        )}
-      </div>
-
-      <div className="overflow-x-auto rounded-lg border border-neutral-200 dark:border-neutral-800">
-        <div className="border-b border-neutral-200 px-5 py-4 dark:border-neutral-800">
-          <h2 className="font-semibold">Comparação com {mesLegivel(anterior)}</h2>
+      <section>
+        <div className="flex items-baseline justify-between gap-4">
+          <h2 className="font-display text-2xl">Onde o dinheiro foi</h2>
+          {fatias.length > 0 && (
+            <p className="text-xs text-fraco">Clique numa fatia para ver as transações</p>
+          )}
         </div>
-        <table className="w-full text-left text-sm">
-          <thead className="text-neutral-500">
-            <tr>
-              <th className="px-5 py-2 font-medium">Categoria</th>
-              <th className="px-5 py-2 text-right font-medium">Mês atual</th>
-              <th className="px-5 py-2 text-right font-medium">Mês anterior</th>
-              <th className="px-5 py-2 text-right font-medium">Variação</th>
+
+        {fatias.length === 0 ? (
+          <Vazio />
+        ) : (
+          <div className="mt-6">
+            <CategoryChart data={fatias} month={mes} />
+          </div>
+        )}
+      </section>
+
+      <section>
+        <h2 className="font-display text-2xl">
+          Contra {mesLegivel(anterior)}
+        </h2>
+
+        <table className="mt-6 w-full text-left text-sm">
+          <thead>
+            <tr className="border-b border-linha">
+              <th className="rotulo pb-3 font-medium">Categoria</th>
+              <th className="rotulo pb-3 text-right font-medium">Agora</th>
+              <th className="rotulo pb-3 text-right font-medium">Antes</th>
+              <th className="rotulo pb-3 text-right font-medium">Variação</th>
             </tr>
           </thead>
           <tbody>
-            {CATEGORIAS.filter((categoria) => categoria !== 'receita').map((categoria) => {
+            {gastos.map((categoria) => {
               const atual = Math.abs(Math.min(0, rollup.byCategory[categoria]))
               const antes = Math.abs(Math.min(0, rollupAnterior.byCategory[categoria]))
               const percentual = antes === 0 ? null : ((atual - antes) / antes) * 100
+              const vazia = atual === 0 && antes === 0
+
               return (
-                <tr key={categoria} className="border-t border-neutral-100 dark:border-neutral-900">
-                  <td className="px-5 py-2.5">{CATEGORIA_LABEL[categoria]}</td>
-                  <td className="px-5 py-2.5 text-right tabular-nums">{formatCents(atual)}</td>
-                  <td className="px-5 py-2.5 text-right tabular-nums">{formatCents(antes)}</td>
-                  <td className="px-5 py-2.5 text-right tabular-nums">
-                    {percentual === null ? (atual > 0 ? 'novo' : '—') : `${percentual >= 0 ? '+' : ''}${percentual.toFixed(0)}%`}
+                <tr
+                  key={categoria}
+                  className="border-b border-linha last:border-0"
+                  // Categoria sem movimento nos dois meses fica recuada em vez
+                  // de sumir: a lista completa é informação, mas não pode
+                  // competir com o que teve gasto.
+                  style={vazia ? { opacity: 0.35 } : undefined}
+                >
+                  <td className="py-3">
+                    <span className="flex items-center gap-2.5">
+                      <span
+                        aria-hidden
+                        className="size-1.5 rounded-full"
+                        style={{ background: CATEGORIA_COR[categoria] }}
+                      />
+                      {CATEGORIA_LABEL[categoria]}
+                    </span>
+                  </td>
+                  <td className="valor py-3 text-right">{formatCents(atual)}</td>
+                  <td className="valor py-3 text-right text-suave">{formatCents(antes)}</td>
+                  <td className="valor py-3 text-right">
+                    <Variacao percentual={percentual} temAtual={atual > 0} />
                   </td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-      </div>
+      </section>
 
       <InsightsPanel
         month={mes}
@@ -112,22 +156,40 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
   )
 }
 
-function Cartao({
-  rotulo,
-  valor,
-  detalhe,
-  destaque,
-}: {
-  rotulo: string
-  valor: string
-  detalhe?: string
-  destaque?: boolean
-}) {
+/**
+ * Gasto não é vermelho.
+ *
+ * Num app de finanças pessoais quase toda linha é despesa — pintar tudo de
+ * vermelho é alarme constante, e alarme constante não é alarme nenhum. Aqui o
+ * sinal é discreto: só a seta e o tom do texto mudam.
+ */
+function Variacao({ percentual, temAtual }: { percentual: number | null; temAtual: boolean }) {
+  if (percentual === null) {
+    return <span className="text-fraco">{temAtual ? 'novo' : '—'}</span>
+  }
+
+  const subiu = percentual > 0
+  const parado = Math.abs(percentual) < 1
+
+  if (parado) return <span className="text-fraco">estável</span>
+
   return (
-    <div className="rounded-lg border border-neutral-200 p-4 dark:border-neutral-800">
-      <p className="text-sm text-neutral-500">{rotulo}</p>
-      <p className={`mt-1 text-2xl font-semibold tabular-nums ${destaque ? 'text-emerald-700 dark:text-emerald-400' : ''}`}>{valor}</p>
-      {detalhe && <p className="mt-1 text-xs text-neutral-500">{detalhe}</p>}
+    <span className={subiu ? 'text-texto' : 'text-suave'}>
+      {subiu ? '↑' : '↓'} {Math.abs(percentual).toFixed(0)}%
+    </span>
+  )
+}
+
+function Vazio() {
+  return (
+    <div className="mt-6 border border-dashed border-linha px-8 py-16 text-center">
+      <p className="text-sm text-suave">Nenhum gasto registrado neste mês.</p>
+      <a
+        href="/importar"
+        className="mt-3 inline-block text-sm text-texto underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:decoration-texto"
+      >
+        Importar um extrato
+      </a>
     </div>
   )
 }
