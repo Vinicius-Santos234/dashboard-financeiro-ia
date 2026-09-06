@@ -1,6 +1,6 @@
 'use client'
 
-import { Suspense, useActionState, useRef, useState } from 'react'
+import { Suspense, startTransition, useActionState, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import {
   signInWithEmailAndPassword,
@@ -11,7 +11,7 @@ import {
   type AuthError,
 } from 'firebase/auth'
 import { auth } from '@/lib/firebase/client'
-import { abrirSessao, type EstadoAuth } from './actions'
+import { abrirDemo, abrirSessao, type EstadoAuth } from './actions'
 import { Marca } from '@/components/marca'
 
 const INICIAL: EstadoAuth = {}
@@ -48,10 +48,8 @@ function Formulario() {
   const [ocupado, setOcupado] = useState(false)
   const [email, setEmail] = useState('')
   const [senha, setSenha] = useState('')
-  const [estado, enviarSessao] = useActionState(abrirSessao, INICIAL)
-
-  const formRef = useRef<HTMLFormElement>(null)
-  const tokenRef = useRef<HTMLInputElement>(null)
+  const [estado, enviarSessao, sessaoPendente] = useActionState(abrirSessao, INICIAL)
+  const [estadoDemo, enviarDemo, demoPendente] = useActionState(abrirDemo, INICIAL)
   const proximo = useSearchParams().get('proximo') ?? ''
 
   async function autenticar(e: React.FormEvent<HTMLFormElement>) {
@@ -76,30 +74,22 @@ function Formulario() {
       // O ID token vai para a Server Action, que o troca por cookie httpOnly.
       const idToken = await cred.user.getIdToken()
 
-      // E então DESLOGA do SDK cliente, de propósito.
-      //
-      // Isto fecha um buraco crítico: enquanto existe `auth.currentUser`, o
-      // Firebase Auth permite que a própria pessoa chame `deleteUser()` ou
-      // `updatePassword()` pelo console do navegador — e isso não passa por
-      // nenhuma rota nossa, então `exigirSessaoGravavel` não vê. Na conta demo
-      // pública, qualquer visitante apagaria ou sequestraria a identidade da
-      // demonstração; trocando o e-mail, deixaria até de ser reconhecido como
-      // demo.
-      //
-      // Dá para desligar porque o app **não usa o SDK cliente depois do
-      // login**: as telas são Server Components e as rotas leem a sessão do
-      // cookie httpOnly. Quem manda no acesso é o cookie, não o `currentUser`.
+      // As contas pessoais usam o cookie no servidor depois desta troca.
+      // A demo tem uma action separada e nunca autentica pelo SDK cliente.
       await signOut(auth)
-
-      if (tokenRef.current) tokenRef.current.value = idToken
-      formRef.current?.requestSubmit()
+      const sessao = new FormData()
+      sessao.set('idToken', idToken)
+      sessao.set('proximo', proximo)
+      startTransition(() => enviarSessao(sessao))
     } catch (erro) {
       setErroLocal(mensagem((erro as AuthError).code ?? ''))
+    } finally {
       setOcupado(false)
     }
   }
 
-  const erro = erroLocal ?? estado.erro
+  const erro = erroLocal ?? estado.erro ?? estadoDemo.erro
+  const pendente = ocupado || sessaoPendente || demoPendente
 
   return (
     <div className="flex w-full max-w-sm flex-col gap-10">
@@ -157,22 +147,21 @@ function Formulario() {
 
         <button
           type="submit"
-          disabled={ocupado}
+          disabled={pendente}
           className="mt-2 w-full bg-texto px-6 py-3 text-sm font-medium text-fundo transition-opacity duration-300 hover:opacity-85 disabled:opacity-40"
         >
-          {ocupado ? 'Aguarde…' : modo === 'entrar' ? 'Entrar' : 'Criar conta'}
+          {pendente ? 'Aguarde…' : modo === 'entrar' ? 'Entrar' : 'Criar conta'}
         </button>
       </form>
 
       <div className="flex flex-col gap-4 border-t border-linha pt-6">
-        {process.env.NEXT_PUBLIC_DEMO_EMAIL && process.env.NEXT_PUBLIC_DEMO_PASSWORD && (
+        {process.env.NEXT_PUBLIC_DEMO_EMAIL && (
           <button
             type="button"
+            disabled={pendente}
             onClick={() => {
-              setModo('entrar')
-              setEmail(process.env.NEXT_PUBLIC_DEMO_EMAIL ?? '')
-              setSenha(process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? '')
               setErroLocal(null)
+              startTransition(() => enviarDemo())
             }}
             className="w-full border border-linha-forte px-6 py-3 text-sm text-suave transition-colors duration-300 hover:border-texto hover:text-texto"
           >
@@ -192,11 +181,6 @@ function Formulario() {
         </button>
       </div>
 
-      {/* Segundo formulário, invisível: leva só o ID token ao servidor. */}
-      <form ref={formRef} action={enviarSessao} className="hidden">
-        <input ref={tokenRef} type="hidden" name="idToken" />
-        <input type="hidden" name="proximo" value={proximo} />
-      </form>
     </div>
   )
 }

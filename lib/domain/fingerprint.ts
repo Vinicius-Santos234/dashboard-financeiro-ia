@@ -67,6 +67,9 @@ export interface ComFingerprint extends RawTransaction {
    * classificou.
    */
   alternativos: string[]
+  /** FITID ambíguo: só casa se o conteúdo do documento também corresponder. */
+  candidatoFitid?: string
+  contentFingerprint?: string
 }
 
 /**
@@ -85,8 +88,8 @@ export interface ComFingerprint extends RawTransaction {
  *    emite o mesmo para linhas diferentes. Confiar cegamente faria a segunda
  *    linha ser recusada como duplicata. Quando um FITID se repete dentro do
  *    arquivo, todas as linhas que o compartilham caem para o hash de conteúdo
- *    — e guardam a forma por FITID em `alternativos`, para o caso de outro
- *    arquivo classificar a mesma linha de outro jeito.
+ *    — e consultam o FITID como candidato condicionado ao mesmo conteúdo,
+ *    para reconhecer documentos legados sem confundir compras diferentes.
  */
 export function atribuirFingerprints(
   accountId: string,
@@ -130,7 +133,7 @@ export function atribuirFingerprints(
     const fitidConfiavel = temFitid && vezesQueOFitidAparece.get(t.fitid!) === 1
 
     if (fitidConfiavel && porFitid) {
-      return { ...t, fingerprint: porFitid, alternativos: [porConteudo] }
+      return { ...t, fingerprint: porFitid, alternativos: [porConteudo], contentFingerprint: porConteudo }
     }
 
     // FITID repetido NÃO vira alternativo — e esta linha custou um bug.
@@ -142,9 +145,15 @@ export function atribuirFingerprints(
     // "COMPRA B" ambas com X faz a B sumir.
     //
     // É exatamente o estrago que o `seq` existe para evitar, entrando por
-    // outra porta. E um FITID que se repete é, por definição, uma identidade
-    // que não identifica — não serve nem como pista.
-    return { ...t, fingerprint: porConteudo, alternativos: [] }
+    // outra porta. Ele só pode ser consultado como candidato se o conteúdo
+    // do documento também corresponder ao fingerprint da linha atual.
+    return {
+      ...t,
+      fingerprint: porConteudo,
+      alternativos: [],
+      contentFingerprint: porConteudo,
+      ...(porFitid ? { candidatoFitid: porFitid } : {}),
+    }
   })
 }
 
@@ -169,7 +178,8 @@ export interface SeparacaoDuplicadas {
  */
 export function separarDuplicadas(
   transacoes: readonly ComFingerprint[],
-  jaExistentes: Iterable<string>
+  jaExistentes: Iterable<string>,
+  conteudosPorId: ReadonlyMap<string, string> = new Map()
 ): SeparacaoDuplicadas {
   const vistos = new Set(jaExistentes)
   const novas: ComFingerprint[] = []
@@ -178,7 +188,9 @@ export function separarDuplicadas(
   for (const t of transacoes) {
     if (
       vistos.has(t.fingerprint) ||
-      t.alternativos.some((id) => vistos.has(id))
+      t.alternativos.some((id) => vistos.has(id)) ||
+      (t.candidatoFitid !== undefined &&
+        conteudosPorId.get(t.candidatoFitid) === t.contentFingerprint)
     ) {
       duplicadas.push(t)
       continue

@@ -1,8 +1,8 @@
 /**
  * A conta demo é pública e somente-leitura.
  *
- * O link do portfólio está aberto na internet e a tela de login preenche as
- * credenciais com um clique. Sem isto, qualquer visitante poderia:
+ * O link do portfólio está aberto na internet. O servidor identifica a demo
+ * por configuração e concede apenas leitura. Sem isto, qualquer visitante poderia:
  *
  * - apagar a conta demo em `/conta` (o `recursiveDelete` é irreversível, e o
  *   demo deixaria de existir para todo mundo depois);
@@ -10,8 +10,8 @@
  * - disparar categorização e insights, **queimando os créditos do Gemini** —
  *   que ficam no projeto e são os mesmos usados em desenvolvimento.
  *
- * A comparação é por e-mail e vem da sessão **verificada** (assinatura do
- * cookie conferida pelo Admin SDK), não de nada que o cliente informe.
+ * A comparação por e-mail abaixo também recusa sessões Firebase antigas da
+ * demo. O novo acesso usa a identidade fixa em lib/firebase/demo.ts.
  */
 
 export class ContaDemoError extends Error {

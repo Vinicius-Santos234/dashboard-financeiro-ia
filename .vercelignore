@@ -1,0 +1,10 @@
+SDK/
+.env*
+.git/
+.next/
+node_modules/
+tests/fixtures/reais/
+*.pem
+*.bak
+_next.bak/
+*.tsbuildinfo

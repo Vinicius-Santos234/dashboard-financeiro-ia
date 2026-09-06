@@ -5,8 +5,10 @@ import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
 import { normalizarPadrao, type RegraCategoria } from '@/lib/domain/rules'
 import type { InsightBody } from '@/lib/llm/schema'
+import type { TransacaoCategorizavel } from '@/lib/llm/categorize'
 import {
   normalizeDescription,
+  fingerprintPorConteudo,
   separarDuplicadas,
   type ComFingerprint,
 } from '@/lib/domain/fingerprint'
@@ -46,6 +48,8 @@ export interface TransactionDoc {
   confidence: number | null
   source: 'ofx' | 'csv' | 'bot' | 'openfinance'
   aiOptOut: boolean
+  /** Incrementada em cada escolha manual, inclusive ao permitir IA novamente. */
+  categoryRevision?: number
 }
 
 export async function garantirUsuario(uid: string, email: string | null) {
@@ -131,6 +135,29 @@ export async function atualizarImport(
   dados: Partial<ImportDoc>
 ): Promise<void> {
   await adminDb().doc(p.importacao(uid, importId)).update(dados)
+}
+
+export async function obterImport(uid: string, importId: string): Promise<ImportDoc | null> {
+  const snap = await adminDb().doc(p.importacao(uid, importId)).get()
+  return snap.exists ? snap.data() as ImportDoc : null
+}
+
+/** Releitura imediatamente antes de cada envio: alterações feitas noutra aba
+ * durante lotes anteriores retiram a linha do próximo payload. */
+export async function revalidarPendentes(
+  uid: string, linhas: readonly TransacaoCategorizavel[]
+): Promise<Set<string>> {
+  if (linhas.length === 0) return new Set()
+  const docs = await adminDb().getAll(
+    ...linhas.map((t) => adminDb().doc(p.transacao(uid, t.fingerprint)))
+  )
+  return new Set(docs.flatMap((doc, i) => {
+    if (!doc.exists) return []
+    const atual = doc.data() as TransactionDoc
+    return atual.category === null && !atual.aiOptOut &&
+      (atual.categoryRevision ?? 0) === (linhas[i].categoryRevision ?? 0)
+      ? [doc.id] : []
+  }))
 }
 
 /**
@@ -255,6 +282,7 @@ export async function gravarTransacoes(
     confidence: null,
     source: opcoes.source,
     aiOptOut: false,
+    categoryRevision: 0,
   })
 
   const porMes = new Map<string, ComFingerprint[]>()
@@ -279,7 +307,9 @@ export async function gravarTransacoes(
         // gravada sob a outra forma de identidade, se um arquivo anterior a
         // classificou de outro jeito (ComFingerprint.alternativos).
         const ids = [
-          ...new Set(pedaco.flatMap((t) => [t.fingerprint, ...t.alternativos])),
+          ...new Set(pedaco.flatMap((t) => [
+            t.fingerprint, ...t.alternativos, ...(t.candidatoFitid ? [t.candidatoFitid] : []),
+          ])),
         ]
 
         // No Firestore, TODA leitura vem antes de TODA escrita.
@@ -289,6 +319,12 @@ export async function gravarTransacoes(
         )
 
         const existentes = docs.filter((d) => d.exists).map((d) => d.id)
+        const conteudosPorId = new Map(docs.filter((d) => d.exists).map((d) => {
+          const dados = d.data() as TransactionDoc & { contentFingerprint?: string }
+          return [d.id, dados.contentFingerprint ?? fingerprintPorConteudo(
+            dados.accountId, dados.occurredOn, dados.amountCents, dados.descriptionRaw, 0
+          )]
+        }))
 
         // Duplicata é decidida por LEITURA, não por capturar exceção. A versão
         // anterior fazia `catch { jaExistiam += 1 }`, que contava timeout e
@@ -299,7 +335,7 @@ export async function gravarTransacoes(
         // A decisão em si é a mesma de `separarDuplicadas`, e é ela que roda —
         // não uma cópia. Reimplementar o casamento aqui faria os testes do
         // critério de aceite da E2 provarem uma função que o app não chama.
-        const { novas, duplicadas } = separarDuplicadas(pedaco, existentes)
+        const { novas, duplicadas } = separarDuplicadas(pedaco, existentes, conteudosPorId)
 
         if (novas.length === 0) {
           return { gravadas: 0, jaExistiam: duplicadas.length }
@@ -323,6 +359,7 @@ export async function gravarTransacoes(
         for (const t of novas) {
           tx.create(col.doc(t.fingerprint), {
             ...montar(t),
+            ...(t.contentFingerprint ? { contentFingerprint: t.contentFingerprint } : {}),
             createdAt: FieldValue.serverTimestamp(),
           })
         }
@@ -357,7 +394,14 @@ export async function recategorizar(
     if (!snap.exists) throw new Error(`Transação ${fingerprint} não existe.`)
 
     const dados = snap.data() as TransactionDoc
-    if (dados.category === para) return
+    if (dados.category === para) {
+      // Confirmar a mesma categoria também é uma decisão do usuário.
+      t.update(txRef, {
+        categorySource: origem, confidence,
+        categoryRevision: (dados.categoryRevision ?? 0) + 1,
+      })
+      return
+    }
 
     const rollupRef = adminDb().doc(p.rollup(uid, dados.month))
     const rollupSnap = await t.get(rollupRef)
@@ -373,7 +417,10 @@ export async function recategorizar(
       byCategory: { ...porCategoriaVazio(), ...delta },
     })
 
-    t.update(txRef, { category: para, categorySource: origem, confidence })
+    t.update(txRef, {
+      category: para, categorySource: origem, confidence,
+      categoryRevision: (dados.categoryRevision ?? 0) + 1,
+    })
     t.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
   })
 }
@@ -385,6 +432,7 @@ export interface AtualizacaoCategoria {
   categorySource: 'ai' | 'rule' | 'user'
   confidence: number | null
   descriptionClean?: string
+  expectedRevision?: number
 }
 
 /**
@@ -395,7 +443,8 @@ export interface AtualizacaoCategoria {
 export async function aplicarCategorias(
   uid: string,
   atualizacoes: readonly AtualizacaoCategoria[]
-): Promise<void> {
+): Promise<string[]> {
+  const aplicadas: string[] = []
   const porMes = new Map<string, AtualizacaoCategoria[]>()
   for (const atualizacao of atualizacoes) {
     const lista = porMes.get(atualizacao.month) ?? []
@@ -409,8 +458,9 @@ export async function aplicarCategorias(
       const rollupRef = adminDb().doc(p.rollup(uid, mes))
       const referencias = pedaco.map((a) => adminDb().doc(p.transacao(uid, a.fingerprint)))
 
-      await adminDb().runTransaction(async (tx) => {
+      const gravadas = await adminDb().runTransaction(async (tx) => {
         const [rollupSnap, ...documentos] = await tx.getAll(rollupRef, ...referencias)
+        const aceitas: string[] = []
         let novo = rollupSnap.exists
           ? (rollupSnap.data() as Rollup)
           : rollupVazio(mes)
@@ -421,6 +471,11 @@ export async function aplicarCategorias(
 
           const atualizacao = pedaco[indice]
           const anterior = documento.data() as TransactionDoc
+          if (atualizacao.expectedRevision !== undefined && (
+            anterior.category !== null || anterior.aiOptOut ||
+            (anterior.categoryRevision ?? 0) !== atualizacao.expectedRevision
+          )) continue
+          if (anterior.month !== mes) continue
           novo = aplicarDelta(novo, {
             totalInCents: 0,
             totalOutCents: 0,
@@ -443,12 +498,18 @@ export async function aplicarCategorias(
               ? { descriptionClean: atualizacao.descriptionClean }
               : {}),
           })
+          aceitas.push(atualizacao.fingerprint)
         }
 
-        tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+        if (aceitas.length > 0) {
+          tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+        }
+        return aceitas
       })
+      aplicadas.push(...gravadas)
     }
   }
+  return aplicadas
 }
 
 export async function listarTransacoesDoImport(uid: string, importId: string) {
@@ -589,6 +650,7 @@ export async function definirAiOptOut(
     if (categoriaEfetivaAntes === categoriaEfetivaDepois) {
       tx.update(ref, {
         aiOptOut: optOut,
+        categoryRevision: (dados.categoryRevision ?? 0) + 1,
         category: destino,
         categorySource: origem,
         confidence: null,
@@ -617,6 +679,7 @@ export async function definirAiOptOut(
 
     tx.update(ref, {
       aiOptOut: optOut,
+      categoryRevision: (dados.categoryRevision ?? 0) + 1,
       category: destino,
       categorySource: origem,
       confidence: null,
@@ -722,6 +785,7 @@ function paraTransacao(d: FirebaseFirestore.DocumentSnapshot): TransacaoLida {
     confidence: t.confidence,
     source: t.source,
     aiOptOut: t.aiOptOut,
+    categoryRevision: t.categoryRevision ?? 0,
   }
 }
 

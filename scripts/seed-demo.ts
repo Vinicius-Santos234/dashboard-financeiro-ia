@@ -1,15 +1,14 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { config } from 'dotenv'
 
 config({ path: '.env.local', quiet: true })
 
 const email = process.env.NEXT_PUBLIC_DEMO_EMAIL
-const password = process.env.NEXT_PUBLIC_DEMO_PASSWORD
-if (!email || !password) {
+if (!email) {
   throw new Error(
-    'Defina NEXT_PUBLIC_DEMO_EMAIL e NEXT_PUBLIC_DEMO_PASSWORD no .env.local antes de gerar o demo.'
+    'Defina NEXT_PUBLIC_DEMO_EMAIL no .env.local antes de gerar o demo.'
   )
 }
 if (!email.toLowerCase().includes('demo')) {
@@ -49,11 +48,19 @@ async function main() {
   async function garantirDemo() {
     try {
       const existente = await adminAuth().getUserByEmail(email!)
-      await adminAuth().updateUser(existente.uid, { password })
+      if (process.env.FIREBASE_DEMO_UID && existente.uid !== process.env.FIREBASE_DEMO_UID) {
+        throw new Error('FIREBASE_DEMO_UID não corresponde à conta demo.')
+      }
+      await adminAuth().updateUser(existente.uid, {
+        disabled: true, password: randomBytes(48).toString('base64url'),
+      })
+      await adminAuth().revokeRefreshTokens(existente.uid)
       return existente.uid
     } catch (erro) {
       if ((erro as { code?: string }).code !== 'auth/user-not-found') throw erro
-      return (await adminAuth().createUser({ email, password })).uid
+      return (await adminAuth().createUser({
+        email, disabled: true, password: randomBytes(48).toString('base64url'),
+      })).uid
     }
   }
 
@@ -122,6 +129,7 @@ async function main() {
   }
 
   console.log(`Conta demo pronta: ${email}`)
+  console.log(`FIREBASE_DEMO_UID=${uid}`)
   console.log('Foram criados dois meses de dados derivados e anonimizados.')
 }
 

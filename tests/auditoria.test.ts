@@ -206,10 +206,13 @@ describe('revisão final do Codex — regressão', () => {
       { occurredOn: '2026-08-14', amountCents: -2000, description: 'COMPRA B', fitid: 'X' },
     ])
 
-    const { novas } = separarDuplicadas(arquivo2, gravados)
+    const { novas, duplicadas } = separarDuplicadas(arquivo2, gravados,
+      new Map(arquivo1.map((t) => [t.fingerprint, t.contentFingerprint!]))
+    )
 
     // COMPRA B tem que entrar. Antes da correção, sumia.
-    expect(novas.map((t) => t.description)).toContain('COMPRA B')
+    expect(novas.map((t) => t.description)).toEqual(['COMPRA B'])
+    expect(duplicadas.map((t) => t.description)).toEqual(['COMPRA A'])
   })
 
   it('a sugestão de mapeamento não chuta formato de data', () => {
@@ -267,9 +270,8 @@ describe('revisão final do Codex — regressão', () => {
   })
 
   it('o login desloga do SDK cliente e usa persistência em memória', () => {
-    // Guarda de arquitetura para o crítico 1: enquanto existir
-    // `auth.currentUser`, o visitante da demo chama `deleteUser()` pelo console
-    // e apaga a demonstração — sem passar por nenhuma rota nossa.
+    // Higiene da sessão pessoal; a proteção da demo é testada por comportamento
+    // em demo-session.test.ts e independe de signOut no navegador.
     const fonte = readFileSync(
       resolve(__dirname, '..', 'app/(auth)/login/page.tsx'),
       'utf8'

@@ -2,6 +2,7 @@ import 'server-only'
 import { cookies } from 'next/headers'
 import { adminAuth } from './admin'
 import { ContaDemoError, ehEmailDemo } from '@/lib/domain/demo'
+import { contaDemo } from './demo'
 
 /**
  * Sessão por cookie httpOnly.
@@ -18,6 +19,25 @@ import { ContaDemoError, ehEmailDemo } from '@/lib/domain/demo'
 
 const NOME = 'sessao'
 const DURACAO_MS = 60 * 60 * 24 * 5 * 1000 // 5 dias
+// Marcador público: só permite ler a conta demo fixada no servidor. Não é um
+// token Firebase, não contém uid e não concede acesso a nenhuma conta pessoal.
+const COOKIE_DEMO = 'demo-readonly-v1'
+
+async function gravarCookie(valor: string) {
+  const store = await cookies()
+  store.set(NOME, valor, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/',
+    maxAge: DURACAO_MS / 1000,
+  })
+}
+
+export async function criarSessaoDemo(): Promise<void> {
+  await contaDemo()
+  await gravarCookie(COOKIE_DEMO)
+}
 
 export type Sessao = {
   uid: string
@@ -34,6 +54,9 @@ export async function criarSessao(idToken: string): Promise<void> {
   // `checkRevoked` na verificação: se a conta foi desativada ou o token
   // revogado entre o login e esta chamada, não vira sessão.
   const claims = await adminAuth().verifyIdToken(idToken, true)
+  if (ehEmailDemo(claims.email) || claims.uid === process.env.FIREBASE_DEMO_UID) {
+    throw new ContaDemoError('Login por senha')
+  }
 
   // `auth_time` é quando a pessoa realmente autenticou, e não quando o token
   // foi emitido — um ID token é renovado sozinho por até uma hora. Sem esta
@@ -49,14 +72,7 @@ export async function criarSessao(idToken: string): Promise<void> {
     expiresIn: DURACAO_MS,
   })
 
-  const store = await cookies()
-  store.set(NOME, cookie, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-    maxAge: DURACAO_MS / 1000,
-  })
+  await gravarCookie(cookie)
 }
 
 /**
@@ -72,9 +88,12 @@ export async function lerSessao(): Promise<Sessao | null> {
   if (!cookie) return null
 
   try {
+    if (cookie === COOKIE_DEMO) return await contaDemo()
     const claims = await adminAuth().verifySessionCookie(cookie, true)
     const email = claims.email ?? null
-    return { uid: claims.uid, email, demo: ehEmailDemo(email) }
+    // Cookies antigos da identidade Firebase da demo não são aceitos.
+    if (ehEmailDemo(email) || claims.uid === process.env.FIREBASE_DEMO_UID) return null
+    return { uid: claims.uid, email, demo: false }
   } catch {
     // Expirado, revogado ou adulterado — os três dão no mesmo: sem sessão.
     return null
@@ -120,7 +139,7 @@ export async function encerrarSessao(revogarTudo = true): Promise<void> {
   const store = await cookies()
   const cookie = store.get(NOME)?.value
 
-  if (cookie && revogarTudo) {
+  if (cookie && cookie !== COOKIE_DEMO && revogarTudo) {
     try {
       const claims = await adminAuth().verifySessionCookie(cookie)
       await adminAuth().revokeRefreshTokens(claims.sub)

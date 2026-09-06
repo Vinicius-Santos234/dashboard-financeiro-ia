@@ -21,7 +21,7 @@ export default async function ContaPage() {
  <div className="mt-3 space-y-2 text-sm text-suave">
  <p>O arquivo enviado é processado em memória e não é armazenado.</p>
  <p>Antes da categorização, CPF, CNPJ, contas, telefones, e-mails, chaves UUID e contrapartes de transferências são removidos.</p>
- <p>O nome do estabelecimento pode permanecer e revelar informação sensível. Você pode impedir o envio à IA em qualquer transação.</p>
+ <p>O nome do estabelecimento pode permanecer e revelar informação sensível. A importação não envia dados à IA: revise as transações e bloqueie as sensíveis antes de autorizar a categorização. O bloqueio não desfaz envios anteriores.</p>
  <p>Descrições anonimizadas e agregados podem ser processados pelo Google fora do Brasil.</p>
  </div>
  </section>
@@ -51,7 +51,11 @@ export default async function ContaPage() {
  <td className="px-5 py-2.5 text-suave">{item.periodStart ?? '—'} a {item.periodEnd ?? '—'}</td>
  <td className="px-5 py-2.5 text-right tabular-nums">{item.rowsImported}</td>
  <td className="px-5 py-2.5 text-right tabular-nums">{item.rowsDuplicated}</td>
- <td className="px-5 py-2.5">{item.status}</td>
+ <td className="px-5 py-2.5">{item.status}
+ <a className="ml-2 underline" href={`/transacoes${item.periodStart ? `?mes=${item.periodStart.slice(0, 7)}` : ''}`}>
+ Revisar pendências
+ </a>
+ </td>
  </tr>
  ))}
  </tbody>

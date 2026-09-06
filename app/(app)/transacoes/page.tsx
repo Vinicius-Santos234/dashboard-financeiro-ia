@@ -5,6 +5,7 @@ import { CATEGORIAS, CATEGORIA_COR, CATEGORIA_LABEL, type Categoria } from '@/li
 import { mesAnterior, mesAtual, mesLegivel, mesSeguinte, mesValido } from '@/lib/domain/month'
 import { Numero } from '../numero'
 import { LinhaTransacao } from './linha'
+import { CategorizarPendentes } from './categorizar-pendentes'
 
 export default async function TransacoesPage({
   searchParams,
@@ -66,6 +67,9 @@ export default async function TransacoesPage({
         <Numero rotulo="Saídas" valor={formatCents(rollup.totalOutCents)} />
         <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
       </section>
+
+      {!demo && <CategorizarPendentes key={mes} month={mes}
+        quantidade={todas.filter((t) => t.category === null && !t.aiOptOut).length} />}
 
       {/* O filtro de categoria virou uma fileira de pílulas, e não um select
           com botão. São dez opções fixas — deixá-las visíveis é mais rápido de

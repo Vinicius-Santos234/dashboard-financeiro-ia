@@ -3,10 +3,20 @@
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
-import { criarSessao, encerrarSessao, lerSessao } from '@/lib/firebase/session'
+import { criarSessao, criarSessaoDemo, encerrarSessao, lerSessao } from '@/lib/firebase/session'
 import { garantirUsuario } from '@/lib/firestore/repo'
 
 export type EstadoAuth = { erro?: string }
+
+export async function abrirDemo(): Promise<EstadoAuth> {
+  try {
+    await criarSessaoDemo()
+  } catch {
+    return { erro: 'A demonstração está indisponível no momento.' }
+  }
+  revalidatePath('/', 'layout')
+  redirect('/dashboard')
+}
 
 const entrada = z.object({
   idToken: z.string().min(1),

@@ -151,9 +151,12 @@ export function LinhaTransacao({
                   <input type="hidden" name="optOut" value={String(!t.aiOptOut)} />
                   <button className="text-xs text-fraco underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-suave">
                     {t.aiOptOut
-                      ? 'Voltar a enviar esta descrição à IA'
-                      : 'Nunca enviar esta descrição à IA'}
+                      ? 'Permitir IA na próxima categorização'
+                      : 'Impedir próximos envios à IA'}
                   </button>
+                  <p className="mt-2 text-xs text-fraco">
+                    A escolha vale para os próximos envios e não desfaz chamadas já iniciadas.
+                  </p>
                 </form>
               </>
             )}

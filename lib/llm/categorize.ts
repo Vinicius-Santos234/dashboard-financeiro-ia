@@ -15,6 +15,7 @@ export interface TransacaoCategorizavel {
   descriptionClean: string
   aiOptOut: boolean
   month: string
+  categoryRevision?: number
 }
 
 export interface CategoriaAplicada {
@@ -25,6 +26,7 @@ export interface CategoriaAplicada {
   confidence: number | null
   rulePattern?: string
   descriptionClean: string
+  expectedRevision: number
 }
 
 export interface PlanoCategorizacao {
@@ -66,10 +68,11 @@ export function planejarCategorizacao(
       prontas.push({
         fingerprint: transacao.fingerprint,
         month: transacao.month,
-        category: 'outros',
+        category: transacao.amountCents >= 0 ? 'receita' : 'outros',
         categorySource: 'user',
         confidence: null,
         descriptionClean: clean,
+        expectedRevision: transacao.categoryRevision ?? 0,
       })
       continue
     }
@@ -84,6 +87,7 @@ export function planejarCategorizacao(
         categorySource: 'rule',
         confidence: 1,
         descriptionClean: clean,
+        expectedRevision: transacao.categoryRevision ?? 0,
       })
       continue
     }
@@ -98,6 +102,7 @@ export function planejarCategorizacao(
         confidence: 1,
         rulePattern: regra.pattern,
         descriptionClean: clean,
+        expectedRevision: transacao.categoryRevision ?? 0,
       })
       continue
     }
@@ -113,13 +118,19 @@ export function planejarCategorizacao(
  */
 export async function categorizarTransacoes(
   plano: PlanoCategorizacao,
-  provider: LLMProvider
+  provider: LLMProvider,
+  revalidar?: (linhas: readonly TransacaoCategorizavel[]) => Promise<ReadonlySet<string>>
 ): Promise<CategoriaAplicada[]> {
   const { paraIa } = plano
   const prontas: CategoriaAplicada[] = [...plano.prontas]
 
   for (let inicio = 0; inicio < paraIa.length; inicio += TAMANHO_LOTE) {
-    const lote = paraIa.slice(inicio, inicio + TAMANHO_LOTE)
+    const candidatos = paraIa.slice(inicio, inicio + TAMANHO_LOTE)
+    const permitidos = revalidar ? await revalidar(candidatos.map((t) => t.transacao)) : null
+    const lote = permitidos
+      ? candidatos.filter((t) => permitidos.has(t.transacao.fingerprint))
+      : candidatos
+    if (lote.length === 0) continue
     const porId = new Map<string, (typeof lote)[number]>()
     const payload: EntradaCategoriaLlm[] = lote.map((item, indice) => {
       const id = `t_${String(indice + 1).padStart(2, '0')}`
@@ -153,6 +164,7 @@ export async function categorizarTransacoes(
         categorySource: 'ai',
         confidence: resposta?.confidence ?? 0,
         descriptionClean: item.clean,
+        expectedRevision: item.transacao.categoryRevision ?? 0,
       })
     }
   }

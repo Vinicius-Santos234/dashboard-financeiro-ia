@@ -15,8 +15,6 @@ type Resultado = {
  duplicadas: number
  descartadas: LinhaDescartada[]
  jaImportadoAntes: boolean
- categorizacao?: { total: number; porIa: number; porRegra: number; model: string }
- aviso?: string
 }
 
 const FORMATOS: { valor: FormatoData; rotulo: string }[] = [
@@ -66,6 +64,8 @@ export default function ImportarPage() {
  }
  setInspecao(json.inspecao)
  setMapping(json.inspecao.sugestao)
+ } catch {
+ setErro('Não foi possível ler o arquivo. Verifique a conexão e tente novamente.')
  } finally {
  setOcupado(false)
  }
@@ -92,20 +92,10 @@ export default function ImportarPage() {
 
  setResultado(json)
 
- // Importar é durável mesmo se o provedor estiver indisponível. A tela
- // deixa isso explícito e a categorização pode ser tentada novamente.
- const categoria = await fetch('/api/categorize', {
- method: 'POST',
- headers: { 'Content-Type': 'application/json' },
- body: JSON.stringify({ importId: json.importId }),
- })
- const categoriaJson = await categoria.json()
- setResultado(
- categoria.ok
- ? { ...json, categorizacao: categoriaJson }
- : { ...json, aviso: categoriaJson.erro ?? 'Categorização pendente.' }
- )
+ // A revisão e o opt-out acontecem antes do primeiro envio à IA.
  router.refresh()
+ } catch {
+ setErro('Não foi possível confirmar a importação. Verifique as transações antes de tentar novamente.')
  } finally {
  setOcupado(false)
  }
@@ -130,6 +120,7 @@ export default function ImportarPage() {
  ref={inputRef}
  type="file"
  accept=".ofx,.qfx,.csv,.txt"
+ disabled={ocupado}
  onChange={(e) => escolher(e.target.files?.[0] ?? null)}
  className="block w-full text-sm text-suave file:mr-4 file:cursor-pointer file:border file:border-linha-forte file:bg-transparent file:px-4 file:py-2 file:text-sm file:text-texto hover:file:border-texto"
  />
@@ -349,26 +340,18 @@ function Resumo({ r, onNovo }: { r: Resultado; onNovo: () => void }) {
  </details>
  )}
 
- {r.categorizacao && (
- <p className="mt-4 border-l-2 px-3 py-2 text-sm text-suave" style={{ borderColor: 'var(--entrada)' }}>
- {r.categorizacao.total} transação(ões) categorizada(s):{' '}
- {r.categorizacao.porRegra} por regra e {r.categorizacao.porIa} por IA.
+ <p className="mt-4 text-sm text-suave">
+ Nenhuma descrição foi enviada à IA nesta importação. Revise as transações,
+ bloqueie as que preferir e depois categorize as pendências de cada mês.
  </p>
- )}
-
- {r.aviso && (
- <p role="alert" className="mt-4 rounded-md border border-linha-forte px-3 py-2 text-sm text-suave">
- {r.aviso}
- </p>
- )}
 
  <div className="mt-5 flex gap-3">
  <Button onClick={onNovo}>Importar outro</Button>
  <a
- href="/transacoes"
+ href={`/transacoes${r.periodo.de ? `?mes=${r.periodo.de.slice(0, 7)}` : ''}`}
  className="inline-flex items-center text-sm text-suave underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-texto"
  >
- Ver transações
+ Revisar e categorizar
  </a>
  </div>
  </div>
