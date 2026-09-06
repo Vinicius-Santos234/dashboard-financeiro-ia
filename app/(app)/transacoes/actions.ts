@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { CATEGORIAS } from '@/lib/domain/categories'
 import { normalizarPadrao } from '@/lib/domain/rules'
+import { resolvedFlowType } from '@/lib/domain/financial-flow'
 import { exigirSessaoGravavel } from '@/lib/firebase/session'
 import {
   definirAiOptOut,
@@ -27,8 +28,15 @@ export async function corrigirCategoria(formData: FormData): Promise<void> {
   const { uid } = await exigirSessaoGravavel('Corrigir categoria')
   const transacao = await obterTransacao(uid, entrada.fingerprint)
   if (!transacao) throw new Error('Transação não encontrada.')
-  if (transacao.amountCents >= 0 && entrada.category !== 'receita') {
+  const flowType = resolvedFlowType(transacao)
+  if (flowType === 'transfer') {
+    throw new Error('Pagamentos e transferências não possuem categoria de gasto.')
+  }
+  if (flowType === 'income' && entrada.category !== 'receita') {
     throw new Error('Entradas precisam permanecer na categoria Receita.')
+  }
+  if ((flowType === 'expense' || flowType === 'refund') && entrada.category === 'receita') {
+    throw new Error('Compras e estornos precisam permanecer em uma categoria de gasto.')
   }
 
   const padrao = entrada.pattern ? normalizarPadrao(entrada.pattern) : ''

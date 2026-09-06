@@ -27,7 +27,23 @@ export interface FatiaCategoria {
  * mostrar aquela categoria. Um só lugar para ler, em vez de uma caixinha
  * flutuante perseguindo o cursor.
  */
-export function CategoryChart({ data, month }: { data: FatiaCategoria[]; month: string }) {
+export function CategoryChart({
+  data,
+  month,
+  rotuloTotal = 'Total',
+}: {
+  data: FatiaCategoria[]
+  month: string
+  /**
+   * O que o centro chama a soma das fatias.
+   *
+   * Existe porque, havendo estorno no mês, essa soma é o gasto **bruto** — e o
+   * card ao lado mostra o líquido. Dois números diferentes rotulados "Total"
+   * na mesma tela é o tipo de coisa que faz a pessoa achar que o app erra a
+   * conta.
+   */
+  rotuloTotal?: string
+}) {
   const router = useRouter()
   const [ativa, setAtiva] = useState<Categoria | null>(null)
 
@@ -74,7 +90,7 @@ export function CategoryChart({ data, month }: { data: FatiaCategoria[]; month: 
 
         {/* O centro. Sem foco mostra o total; com foco, a categoria. */}
         <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center">
-          <p className="rotulo">{emFoco ? emFoco.label : 'Total'}</p>
+          <p className="rotulo">{emFoco ? emFoco.label : rotuloTotal}</p>
           <p className="valor mt-1.5 text-xl font-light">
             {formatCents(emFoco ? emFoco.value : total)}
           </p>

@@ -6,6 +6,12 @@ import { mesAnterior, mesAtual, mesLegivel, mesValido } from '@/lib/domain/month
 import { Numero } from '../numero'
 import { CategoryChart, type FatiaCategoria } from './category-chart'
 import { InsightsPanel } from './insights-panel'
+import {
+  categoriasLiquidas,
+  gastoBrutoCents,
+  totalNetExpenseCents,
+  totalRefundCents,
+} from '@/lib/firestore/rollup'
 
 export default async function DashboardPage({ searchParams }: PageProps<'/dashboard'>) {
   const { uid } = await exigirSessao()
@@ -19,6 +25,11 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
     lerInsight(uid, mes),
   ])
 
+  // As fatias são o gasto BRUTO por categoria, e por isso somam exatamente
+  // `gastoBrutoCents` — o critério de aceite da spec §8. O estorno não é
+  // subtraído aqui porque ele não tem onde aparecer numa pizza: crédito é
+  // fatia negativa, e fatia negativa não existe. Ele entra como número
+  // próprio, ao lado, onde dá para lê-lo.
   const fatias: FatiaCategoria[] = CATEGORIAS.filter(
     (categoria) => rollup.byCategory[categoria] < 0
   ).map((category) => ({
@@ -29,7 +40,12 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
   }))
 
   const maior = [...fatias].sort((a, b) => b.value - a.value)[0]
-  const saldo = rollup.totalInCents + rollup.totalOutCents
+  const bruto = gastoBrutoCents(rollup)
+  const estornos = totalRefundCents(rollup)
+  const gastoLiquido = totalNetExpenseCents(rollup)
+  const saldo = rollup.totalInCents - gastoLiquido
+  const liquidoPorCategoria = categoriasLiquidas(rollup)
+  const liquidoAnteriorPorCategoria = categoriasLiquidas(rollupAnterior)
   const gastos = CATEGORIAS.filter((c) => c !== 'receita')
 
   return (
@@ -67,9 +83,24 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       {/* O `bg-linha` do pai aparece pelos vãos de 1px do `gap-px` e vira a
           divisória — sem desenhar borda em célula nenhuma, que é o que
           duplicaria traço nos encontros. */}
-      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
-        <Numero rotulo="Total gasto" valor={formatCents(Math.abs(rollup.totalOutCents))} />
+      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-5">
+        <Numero
+          rotulo="Total gasto"
+          valor={formatCents(gastoLiquido)}
+          // O detalhe existe para a conta fechar na tela: sem ele, a pizza
+          // soma o bruto e o card mostra o líquido, e a diferença fica sem
+          // explicação nenhuma à vista.
+          detalhe={
+            estornos > 0
+              ? `${formatCents(bruto)} − ${formatCents(estornos)} em estornos`
+              : undefined
+          }
+        />
         <Numero rotulo="Total recebido" valor={formatCents(rollup.totalInCents)} entrada />
+        <Numero
+          rotulo="Pagamentos / transf."
+          valor={formatCents(rollup.totalTransferCents)}
+        />
         <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
         <Numero
           rotulo="Maior categoria"
@@ -91,7 +122,11 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
           <Vazio />
         ) : (
           <div className="mt-6">
-            <CategoryChart data={fatias} month={mes} />
+            <CategoryChart
+              data={fatias}
+              month={mes}
+              rotuloTotal={estornos > 0 ? 'Gasto bruto' : 'Total'}
+            />
           </div>
         )}
       </section>
@@ -112,8 +147,11 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
           </thead>
           <tbody>
             {gastos.map((categoria) => {
-              const atual = Math.abs(Math.min(0, rollup.byCategory[categoria]))
-              const antes = Math.abs(Math.min(0, rollupAnterior.byCategory[categoria]))
+              // Comparação mês a mês é sobre o que de fato saiu do bolso,
+              // então aqui é o LÍQUIDO — senão uma devolução grande não
+              // apareceria como queda nenhuma.
+              const atual = Math.abs(Math.min(0, liquidoPorCategoria[categoria]))
+              const antes = Math.abs(Math.min(0, liquidoAnteriorPorCategoria[categoria]))
               const percentual = antes === 0 ? null : ((atual - antes) / antes) * 100
               const vazia = atual === 0 && antes === 0
 

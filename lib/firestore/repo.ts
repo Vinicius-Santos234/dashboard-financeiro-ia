@@ -3,6 +3,11 @@ import { createHash } from 'node:crypto'
 import { FieldValue } from 'firebase-admin/firestore'
 import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
+import {
+  resolvedFlowType,
+  type FlowType,
+  type StatementProfile,
+} from '@/lib/domain/financial-flow'
 import { normalizarPadrao, type RegraCategoria } from '@/lib/domain/rules'
 import type { InsightBody } from '@/lib/llm/schema'
 import type { TransacaoCategorizavel } from '@/lib/llm/categorize'
@@ -18,6 +23,7 @@ import {
   calcularRollup,
   deltaDeInsercao,
   deltaDeRecategorizacao,
+  deltaSoDeCategoria,
   mesDe,
   porCategoriaVazio,
   rollupVazio,
@@ -40,6 +46,8 @@ export interface TransactionDoc {
   occurredOn: string
   month: string
   amountCents: number
+  /** Ausente apenas em documentos legados; nesse caso o sinal antigo vale. */
+  flowType?: FlowType
   descriptionRaw: string
   descriptionClean: string
   fitid: string | null
@@ -108,6 +116,7 @@ export async function fingerprintsExistentes(
 export interface ImportDoc {
   accountId: string
   source: 'ofx' | 'csv'
+  financialProfile?: StatementProfile
   filename: string
   fileHash: string
   periodStart: string | null
@@ -274,12 +283,24 @@ export async function gravarTransacoes(
     occurredOn: t.occurredOn,
     month: mesDe(t.occurredOn),
     amountCents: t.amountCents,
+    flowType: resolvedFlowType(t),
     descriptionRaw: t.description,
     descriptionClean: opcoes.descriptionClean(t),
     fitid: t.fitid ?? null,
-    category: null,
-    categorySource: null,
-    confidence: null,
+    category:
+      resolvedFlowType(t) === 'income'
+        ? 'receita'
+        : resolvedFlowType(t) === 'transfer'
+          ? 'outros'
+          : null,
+    categorySource:
+      resolvedFlowType(t) === 'income' || resolvedFlowType(t) === 'transfer'
+        ? 'rule'
+        : null,
+    confidence:
+      resolvedFlowType(t) === 'income' || resolvedFlowType(t) === 'transfer'
+        ? 1
+        : null,
     source: opcoes.source,
     aiOptOut: false,
     categoryRevision: 0,
@@ -345,20 +366,17 @@ export async function gravarTransacoes(
           ? (rollupSnap.data() as Rollup)
           : rollupVazio(mes)
 
+        const documentosNovos = novas.map((t) => ({ t, doc: montar(t) }))
         const novo = aplicarDelta(
           base,
           deltaDeInsercao(
-            novas.map((t) => ({
-              month: mes,
-              amountCents: t.amountCents,
-              category: null,
-            }))
+            documentosNovos.map(({ doc }) => doc)
           )
         )
 
-        for (const t of novas) {
+        for (const { t, doc } of documentosNovos) {
           tx.create(col.doc(t.fingerprint), {
-            ...montar(t),
+            ...doc,
             ...(t.contentFingerprint ? { contentFingerprint: t.contentFingerprint } : {}),
             createdAt: FieldValue.serverTimestamp(),
           })
@@ -409,13 +427,13 @@ export async function recategorizar(
       ? (rollupSnap.data() as Rollup)
       : rollupVazio(dados.month)
 
-    const delta = deltaDeRecategorizacao(dados.amountCents, dados.category, para)
-    const novo = aplicarDelta(base, {
-      totalInCents: 0,
-      totalOutCents: 0,
-      count: 0,
-      byCategory: { ...porCategoriaVazio(), ...delta },
-    })
+    const delta = deltaDeRecategorizacao(
+      dados.amountCents,
+      dados.category,
+      para,
+      resolvedFlowType(dados)
+    )
+    const novo = aplicarDelta(base, deltaSoDeCategoria(delta))
 
     t.update(txRef, {
       category: para, categorySource: origem, confidence,
@@ -476,19 +494,17 @@ export async function aplicarCategorias(
             (anterior.categoryRevision ?? 0) !== atualizacao.expectedRevision
           )) continue
           if (anterior.month !== mes) continue
-          novo = aplicarDelta(novo, {
-            totalInCents: 0,
-            totalOutCents: 0,
-            count: 0,
-            byCategory: {
-              ...porCategoriaVazio(),
-              ...deltaDeRecategorizacao(
+          novo = aplicarDelta(
+            novo,
+            deltaSoDeCategoria(
+              deltaDeRecategorizacao(
                 anterior.amountCents,
                 anterior.category,
-                atualizacao.category
-              ),
-            },
-          })
+                atualizacao.category,
+                resolvedFlowType(anterior)
+              )
+            )
+          )
 
           tx.update(documento.ref, {
             category: atualizacao.category,
@@ -625,7 +641,7 @@ export async function definirAiOptOut(
     // positivo como `receita` de forma determinística, antes de qualquer lote.
     // Movê-la para `outros` ao marcar opt-out sumia com o salário do gráfico
     // por uma escolha que não muda nada no que ela faz.
-    const ehEntrada = dados.amountCents >= 0
+    const ehEntrada = resolvedFlowType(dados) === 'income'
     const destino: Categoria | null = optOut
       ? ehEntrada
         ? 'receita'
@@ -663,19 +679,17 @@ export async function definirAiOptOut(
     const base = rollupSnap.exists
       ? (rollupSnap.data() as Rollup)
       : rollupVazio(dados.month)
-    const novo = aplicarDelta(base, {
-      totalInCents: 0,
-      totalOutCents: 0,
-      count: 0,
-      byCategory: {
-        ...porCategoriaVazio(),
-        ...deltaDeRecategorizacao(
+    const novo = aplicarDelta(
+      base,
+      deltaSoDeCategoria(
+        deltaDeRecategorizacao(
           dados.amountCents,
           categoriaEfetivaAntes,
-          categoriaEfetivaDepois
-        ),
-      },
-    })
+          categoriaEfetivaDepois,
+          resolvedFlowType(dados)
+        )
+      )
+    )
 
     tx.update(ref, {
       aiOptOut: optOut,
@@ -690,7 +704,17 @@ export async function definirAiOptOut(
 
 export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
   const snap = await adminDb().doc(p.rollup(uid, mes)).get()
-  return snap.exists ? (snap.data() as Rollup) : rollupVazio(mes)
+  if (!snap.exists) return rollupVazio(mes)
+  const data = snap.data() as Rollup
+  return {
+    ...data,
+    totalRefundCents: data.totalRefundCents ?? 0,
+    totalTransferCents: data.totalTransferCents ?? 0,
+    // Rollup gravado antes do estorno por categoria não tem o mapa. Normalizar
+    // na LEITURA — e não em cada tela — é o que impede o `undefined` de vazar
+    // para um `Math.abs` e virar `NaN` no meio de um gráfico.
+    refundByCategory: data.refundByCategory ?? porCategoriaVazio(),
+  }
 }
 
 export interface InsightDoc {
@@ -743,7 +767,12 @@ export async function recalcularRollup(uid: string, mes: string): Promise<Rollup
 
     const linhas: LinhaAgregavel[] = snap.docs.map((d) => {
       const t = d.data() as TransactionDoc
-      return { month: t.month, amountCents: t.amountCents, category: t.category }
+      return {
+        month: t.month,
+        amountCents: t.amountCents,
+        category: t.category,
+        flowType: resolvedFlowType(t),
+      }
     })
 
     const novo = calcularRollup(mes, linhas)
@@ -777,6 +806,7 @@ function paraTransacao(d: FirebaseFirestore.DocumentSnapshot): TransacaoLida {
     occurredOn: t.occurredOn,
     month: t.month,
     amountCents: t.amountCents,
+    flowType: resolvedFlowType(t),
     descriptionRaw: t.descriptionRaw,
     descriptionClean: t.descriptionClean,
     fitid: t.fitid,

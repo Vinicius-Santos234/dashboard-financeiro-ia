@@ -13,6 +13,12 @@ import { CsvInvalidoError, inspecionar } from '@/lib/sources/csv'
 import { DataInvalidaError } from '@/lib/sources/date'
 import { ValorInvalidoError } from '@/lib/domain/money'
 import { atribuirFingerprints } from '@/lib/domain/fingerprint'
+import {
+  classifyTransactions,
+  STATEMENT_PROFILES,
+  summarizeFlows,
+  type StatementProfile,
+} from '@/lib/domain/financial-flow'
 import { anonymize } from '@/lib/privacy/anonymize'
 import {
   contaPadrao,
@@ -47,6 +53,8 @@ const mappingSchema = z.object({
   colunaValorSaida: z.string().optional(),
   formatoData: z.enum(['dd/mm/yyyy', 'mm/dd/yyyy', 'yyyy-mm-dd']).optional(),
 })
+
+const financialProfileSchema = z.enum(STATEMENT_PROFILES)
 
 function erroDeLeitura(erro: unknown): string | null {
   if (
@@ -136,6 +144,7 @@ export async function POST(request: Request) {
   }
 
   let entrada: EntradaImport
+  let financialProfile: StatementProfile | null = null
   if (source === 'csv') {
     const bruto = form.get('mapping')
     const parsed = mappingSchema.safeParse(
@@ -147,6 +156,14 @@ export async function POST(request: Request) {
         { status: 400 }
       )
     }
+    const profile = financialProfileSchema.safeParse(form.get('financialProfile'))
+    if (!profile.success) {
+      return NextResponse.json(
+        { erro: 'CSV exige escolher o tipo de extrato e a convenção dos valores.' },
+        { status: 400 }
+      )
+    }
+    financialProfile = profile.data
     entrada = { source: 'csv', bytes, mapping: parsed.data }
   } else {
     entrada = { source: 'ofx', bytes }
@@ -193,6 +210,27 @@ export async function POST(request: Request) {
     )
   }
 
+  financialProfile ??=
+    lido.account?.kind === 'credit_card'
+      ? 'credit_card_negative_expenses'
+      : 'bank_account'
+
+  const transactions = classifyTransactions(lido.transactions, financialProfile)
+  const flowSummary = summarizeFlows(transactions)
+
+  // A prévia percorre exatamente o mesmo parser e a mesma normalização do
+  // import real. Nada é persistido; ela existe para a pessoa detectar sinal
+  // invertido antes de confirmar.
+  if (new URL(request.url).searchParams.get('prever') === '1') {
+    return NextResponse.json({
+      periodo: { de: lido.periodStart ?? null, ate: lido.periodEnd ?? null },
+      lidas: transactions.length,
+      descartadas: lido.descartadas,
+      financialProfile,
+      flowSummary,
+    })
+  }
+
   // --- persistência --------------------------------------------------------
   const fileHash = hashDoArquivo(bytes)
   const anteriores = await importsComMesmoHash(uid, fileHash)
@@ -202,14 +240,17 @@ export async function POST(request: Request) {
       ? `${lido.account.institution ?? 'Conta'} ${lido.account.id}`
       : 'Conta principal',
     institution: lido.account?.institution ?? null,
-    kind: lido.account?.kind ?? 'checking',
+    kind:
+      lido.account?.kind ??
+      (financialProfile === 'bank_account' ? 'checking' : 'credit_card'),
   })
 
-  const comFingerprint = atribuirFingerprints(accountId, lido.transactions)
+  const comFingerprint = atribuirFingerprints(accountId, transactions)
 
   const importId = await registrarImport(uid, {
     accountId,
     source,
+    financialProfile,
     filename: arquivo.name,
     fileHash,
     periodStart: lido.periodStart ?? null,
@@ -248,6 +289,8 @@ export async function POST(request: Request) {
       duplicadas: jaExistiam,
       descartadas: lido.descartadas,
       jaImportadoAntes: anteriores.length > 0,
+      financialProfile,
+      flowSummary,
     })
   } catch (erro) {
     // O registro do import fica com o erro em vez de sumir: um import que

@@ -9,12 +9,18 @@ import {
   type Categoria,
 } from '@/lib/domain/categories'
 import { sugerirPadrao } from '@/lib/domain/rules'
+import {
+  displayAmountCents,
+  resolvedFlowType,
+  type FlowType,
+} from '@/lib/domain/financial-flow'
 import { alterarOptOut, corrigirCategoria } from './actions'
 
 interface Transacao {
   fingerprint: string
   occurredOn: string
   amountCents: number
+  flowType?: FlowType
   descriptionRaw: string
   descriptionClean: string
   category: Categoria | null
@@ -43,8 +49,21 @@ export function LinhaTransacao({
 }) {
   const [aberta, setAberta] = useState(false)
 
+  const flowType = resolvedFlowType(t)
+  const valorExibido = displayAmountCents({
+    amountCents: t.amountCents,
+    description: t.descriptionRaw,
+    flowType,
+  })
+
   const cor = t.category ? CATEGORIA_COR[t.category] : 'var(--fraco)'
-  const rotuloCategoria = t.category ? CATEGORIA_LABEL[t.category] : 'sem categoria'
+  const rotuloCategoria = flowType === 'transfer'
+    ? 'pagamento / transferência'
+    : flowType === 'refund'
+      ? `crédito / estorno · ${t.category ? CATEGORIA_LABEL[t.category] : 'sem categoria'}`
+      : t.category
+        ? CATEGORIA_LABEL[t.category]
+        : 'sem categoria'
 
   return (
     <li className="border-b border-linha last:border-0">
@@ -74,9 +93,15 @@ export function LinhaTransacao({
 
         <span
           className="valor text-sm"
-          style={t.amountCents >= 0 ? { color: 'var(--entrada)' } : undefined}
+          style={
+            flowType === 'income' || flowType === 'refund'
+              ? { color: 'var(--entrada)' }
+              : flowType === 'transfer'
+                ? { color: 'var(--suave)' }
+                : undefined
+          }
         >
-          {formatCents(t.amountCents)}
+          {formatCents(valorExibido)}
         </span>
       </div>
 
@@ -84,7 +109,11 @@ export function LinhaTransacao({
         <div className="grid grid-cols-[auto_1fr] gap-x-6 pb-5">
           <span />
           <div className="flex flex-col gap-4">
-            {demo ? (
+            {flowType === 'transfer' ? (
+              <p className="text-xs text-fraco">
+                Esta movimentação fica visível, mas não entra em gastos, receitas ou categorias.
+              </p>
+            ) : demo ? (
               <p className="text-xs text-fraco">
                 A conta de demonstração é somente leitura. Crie uma conta para
                 corrigir categorias e criar regras.
@@ -95,7 +124,9 @@ export function LinhaTransacao({
                   <input type="hidden" name="fingerprint" value={t.fingerprint} />
 
                   <div className="flex flex-wrap gap-1.5">
-                    {(t.amountCents >= 0 ? (['receita'] as const) : CATEGORIAS).map(
+                    {(flowType === 'income'
+                      ? (['receita'] as const)
+                      : CATEGORIAS.filter((item) => item !== 'receita')).map(
                       (item) => (
                         <label
                           key={item}

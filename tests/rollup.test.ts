@@ -4,9 +4,13 @@ import {
   deltaDeInsercao,
   deltaDeRecategorizacao,
   aplicarDelta,
+  deltaSoDeCategoria,
   divergencias,
+  gastoBrutoCents,
+  totalNetExpenseCents,
+  totalRefundCents,
+  categoriasLiquidas,
   rollupVazio,
-  porCategoriaVazio,
   mesDe,
   type LinhaAgregavel,
 } from '@/lib/firestore/rollup'
@@ -82,15 +86,10 @@ describe('delta incremental', () => {
     const antes = calcularRollup('2026-08', AGOSTO)
 
     // A transação de -5000 sem categoria vira transporte.
-    const depois = aplicarDelta(antes, {
-      totalInCents: 0,
-      totalOutCents: 0,
-      count: 0,
-      byCategory: {
-        ...porCategoriaVazio(),
-        ...deltaDeRecategorizacao(-5000, null, 'transporte'),
-      },
-    })
+    const depois = aplicarDelta(
+      antes,
+      deltaSoDeCategoria(deltaDeRecategorizacao(-5000, null, 'transporte'))
+    )
 
     const esperado = calcularRollup(
       '2026-08',
@@ -106,14 +105,39 @@ describe('delta incremental', () => {
     expect(divergencias(depois, esperado)).toEqual([])
   })
 
+  it('estorno reduz gasto e pagamento de fatura fica fora do resultado', () => {
+    const r = calcularRollup('2026-08', [
+      { month: '2026-08', amountCents: 10000, flowType: 'expense', category: 'compras' },
+      { month: '2026-08', amountCents: -500, flowType: 'refund', category: 'compras' },
+      { month: '2026-08', amountCents: -9500, flowType: 'transfer', category: 'outros' },
+    ])
+
+    expect(r.totalOutCents).toBe(-10000)
+    expect(r.totalRefundCents).toBe(500)
+    expect(r.totalTransferCents).toBe(9500)
+
+    // `byCategory` é o BRUTO: o estorno não é abatido aqui, senão a fatia
+    // deixa de somar com o total. Ele mora no mapa ao lado.
+    expect(r.byCategory.compras).toBe(-10000)
+    expect(r.refundByCategory.compras).toBe(500)
+    expect(categoriasLiquidas(r).compras).toBe(-9500)
+
+    // Pagamento de fatura não entra em nenhum dos dois.
+    expect(r.byCategory.outros).toBe(0)
+    expect(r.refundByCategory.outros).toBe(0)
+  })
+
   it('recategorizar para a mesma categoria não gera delta', () => {
-    expect(deltaDeRecategorizacao(-800, 'alimentacao', 'alimentacao')).toEqual({})
+    expect(deltaDeRecategorizacao(-800, 'alimentacao', 'alimentacao')).toEqual({
+      byCategory: {},
+      refundByCategory: {},
+    })
   })
 
   it('transação sem categoria sai de `outros` ao ser categorizada', () => {
     expect(deltaDeRecategorizacao(-5000, null, 'transporte')).toEqual({
-      outros: 5000,
-      transporte: -5000,
+      byCategory: { outros: 5000, transporte: -5000 },
+      refundByCategory: {},
     })
   })
 })
@@ -144,5 +168,112 @@ describe('mesDe', () => {
     // do dia 1 para o mês anterior.
     expect(mesDe('2026-08-01')).toBe('2026-08')
     expect(mesDe('2026-12-31')).toBe('2026-12')
+  })
+
+  /**
+   * O defeito que motivou separar `refundByCategory`.
+   *
+   * Compra de R$ 100 em alimentação e estorno de R$ 30 em eletrônicos — o caso
+   * banal de comprar em agosto e a devolução cair em setembro. Com os dois
+   * somados no mesmo mapa, `compras` ficava POSITIVA, a pizza (que só
+   * desenha fatia negativa) descartava a categoria inteira, e o total do mês
+   * subtraía aquele estorno assim mesmo: as fatias somavam 100 embaixo de um
+   * card escrito 70.
+   */
+  it('a soma das fatias bate com o gasto bruto, mesmo com estorno sem despesa no mês', () => {
+    const r = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -10000, category: 'alimentacao', flowType: 'expense' },
+      { month: '2026-09', amountCents: 3000, category: 'compras', flowType: 'refund' },
+    ])
+
+    const fatias = CATEGORIAS.filter((c) => r.byCategory[c] < 0).map((c) =>
+      Math.abs(r.byCategory[c])
+    )
+    const somaDasFatias = fatias.reduce((a, b) => a + b, 0)
+
+    expect(somaDasFatias).toBe(gastoBrutoCents(r))
+    expect(gastoBrutoCents(r)).toBe(10000)
+    expect(totalRefundCents(r)).toBe(3000)
+    expect(totalNetExpenseCents(r)).toBe(7000)
+
+    // E as três leituras fecham entre si.
+    expect(gastoBrutoCents(r) - totalRefundCents(r)).toBe(totalNetExpenseCents(r))
+  })
+
+  it('o estorno não contamina a fatia da categoria — ele vive no mapa dele', () => {
+    const r = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -10000, category: 'alimentacao', flowType: 'expense' },
+      { month: '2026-09', amountCents: 3000, category: 'alimentacao', flowType: 'refund' },
+    ])
+
+    expect(r.byCategory.alimentacao).toBe(-10000)
+    expect(r.refundByCategory.alimentacao).toBe(3000)
+    expect(categoriasLiquidas(r).alimentacao).toBe(-7000)
+  })
+
+  /**
+   * O segundo defeito: `Math.max(0, …)` no gasto líquido.
+   *
+   * Num mês em que o estorno supera a compra, o card mostrava R$ 0,00 e os
+   * R$ 30 que voltaram sumiam também do saldo. Mês líquido-positivo é
+   * informação, não estado inválido.
+   */
+  it('mês em que o estorno supera a compra fica negativo, não zerado', () => {
+    const r = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -5000, category: 'compras', flowType: 'expense' },
+      { month: '2026-09', amountCents: 8000, category: 'compras', flowType: 'refund' },
+    ])
+
+    expect(totalNetExpenseCents(r)).toBe(-3000)
+    expect(0 - totalNetExpenseCents(r)).toBe(3000)
+  })
+
+  it('recategorizar um estorno move o valor dentro de refundByCategory', () => {
+    const antes = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -10000, category: 'alimentacao', flowType: 'expense' },
+      { month: '2026-09', amountCents: 3000, category: 'outros', flowType: 'refund' },
+    ])
+
+    const depois = aplicarDelta(
+      antes,
+      deltaSoDeCategoria(deltaDeRecategorizacao(3000, 'outros', 'compras', 'refund'))
+    )
+
+    expect(depois.refundByCategory.outros).toBe(0)
+    expect(depois.refundByCategory.compras).toBe(3000)
+    // O gasto bruto não se mexe: recategorizar não cria nem destrói despesa.
+    expect(depois.byCategory).toEqual(antes.byCategory)
+
+    const esperado = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -10000, category: 'alimentacao', flowType: 'expense' },
+      { month: '2026-09', amountCents: 3000, category: 'compras', flowType: 'refund' },
+    ])
+    expect(divergencias(depois, esperado)).toEqual([])
+  })
+
+  it('transferência não entra em nenhum dos dois mapas', () => {
+    const r = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: 300000, category: 'outros', flowType: 'transfer' },
+    ])
+
+    expect(r.byCategory.outros).toBe(0)
+    expect(r.refundByCategory.outros).toBe(0)
+    expect(r.totalTransferCents).toBe(300000)
+    expect(gastoBrutoCents(r)).toBe(0)
+  })
+
+  it('acusa deriva no estorno por categoria, e não só no gasto', () => {
+    const real = calcularRollup('2026-09', [
+      { month: '2026-09', amountCents: -10000, category: 'alimentacao', flowType: 'expense' },
+      { month: '2026-09', amountCents: 3000, category: 'alimentacao', flowType: 'refund' },
+    ])
+    const torto = {
+      ...real,
+      refundByCategory: { ...real.refundByCategory, alimentacao: 1 },
+    }
+
+    expect(divergencias(torto, real)).toContain(
+      'refundByCategory.alimentacao: guardado 1, real 3000'
+    )
   })
 })

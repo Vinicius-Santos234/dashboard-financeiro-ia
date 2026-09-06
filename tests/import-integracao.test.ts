@@ -85,9 +85,9 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
     expect(rollup.totalInCents).toBe(320000)
     expect(rollup.totalOutCents).toBe(-4790 - 800 - 800 - 5000)
 
-    // Nada foi categorizado ainda, então tudo cai em `outros` — assim o total
-    // do gráfico nunca fica menor que o do extrato só porque a IA não rodou.
-    expect(rollup.byCategory.outros).toBe(320000 - 4790 - 800 - 800 - 5000)
+    // Receita é determinística; despesas pendentes ficam em `outros`.
+    expect(rollup.byCategory.receita).toBe(320000)
+    expect(rollup.byCategory.outros).toBe(-4790 - 800 - 800 - 5000)
   }, 60_000)
 
   it('o rollup incremental bate com o recálculo do zero', async () => {
@@ -100,6 +100,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
       .map((t) => ({
         month: t.month,
         amountCents: t.amountCents,
+        flowType: t.flowType,
         category: t.category,
       }))
 
@@ -158,6 +159,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
       .map((t) => ({
         month: t.month,
         amountCents: t.amountCents,
+        flowType: t.flowType,
         category: t.category,
       }))
 

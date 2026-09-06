@@ -40,6 +40,7 @@ async function enviarExtrato() {
   const body = new FormData()
   body.set('arquivo', new File(['Data;Descricao;Valor\n14/08/2026;PADARIA;-10,00\n15/08/2026;CLINICA;-20,00'], 'extrato.csv'))
   body.set('source', 'csv')
+  body.set('financialProfile', 'bank_account')
   body.set('mapping', JSON.stringify({
     colunaData: 'Data', colunaDescricao: 'Descricao', colunaValor: 'Valor', formatoData: 'dd/mm/yyyy',
   }))

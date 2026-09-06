@@ -5,6 +5,8 @@
  * entrarem, viram mais uma implementação daqui e nada mais no app muda.
  */
 
+import type { FlowType } from '@/lib/domain/financial-flow'
+
 export type SourceId = 'ofx' | 'csv' | 'bot' | 'openfinance'
 
 export interface RawTransaction {
@@ -16,6 +18,11 @@ export interface RawTransaction {
   description: string
   /** Id da transação no banco, quando a fonte fornece. */
   fitid?: string
+  /**
+   * Interpretação financeira do valor bruto. Os adapters deixam ausente;
+   * a fronteira de importação preenche depois de conhecer o tipo do extrato.
+   */
+  flowType?: FlowType
 }
 
 export interface ContaDetectada {

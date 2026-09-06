@@ -4,6 +4,11 @@ import type { Categoria } from '@/lib/domain/categories'
 import { respostaCategoriaSchema } from './schema'
 import type { EntradaCategoriaLlm, LLMProvider } from './provider'
 import { MAX_CARACTERES_DESCRICAO } from '@/lib/domain/limites'
+import {
+  categorizationAmountCents,
+  resolvedFlowType,
+  type FlowType,
+} from '@/lib/domain/financial-flow'
 
 export const TAMANHO_LOTE = 50
 export const MAX_LOTES = 20
@@ -12,6 +17,7 @@ export interface TransacaoCategorizavel {
   fingerprint: string
   occurredOn: string
   amountCents: number
+  flowType?: FlowType
   descriptionClean: string
   aiOptOut: boolean
   month: string
@@ -63,12 +69,26 @@ export function planejarCategorizacao(
   for (const transacao of transacoes) {
     // Defesa de fronteira: não confia que uma versão anterior gravou clean.
     const clean = anonymize(transacao.descriptionClean)
+    const flowType = resolvedFlowType(transacao)
+
+    if (flowType === 'transfer') {
+      prontas.push({
+        fingerprint: transacao.fingerprint,
+        month: transacao.month,
+        category: 'outros',
+        categorySource: 'rule',
+        confidence: 1,
+        descriptionClean: clean,
+        expectedRevision: transacao.categoryRevision ?? 0,
+      })
+      continue
+    }
 
     if (transacao.aiOptOut) {
       prontas.push({
         fingerprint: transacao.fingerprint,
         month: transacao.month,
-        category: transacao.amountCents >= 0 ? 'receita' : 'outros',
+        category: flowType === 'income' ? 'receita' : 'outros',
         categorySource: 'user',
         confidence: null,
         descriptionClean: clean,
@@ -79,7 +99,7 @@ export function planejarCategorizacao(
 
     // A separação exata entre entradas e fatias de gasto depende de entradas
     // viverem em `receita`. Além de ser determinístico, isso economiza tokens.
-    if (transacao.amountCents >= 0) {
+    if (flowType === 'income') {
       prontas.push({
         fingerprint: transacao.fingerprint,
         month: transacao.month,
@@ -140,7 +160,11 @@ export async function categorizarTransacoes(
         // Corte de tamanho: a cota conta CHAMADAS, nao tokens, entao um lote
         // de descricoes gigantes custaria o mesmo e gastaria muito mais.
         desc: item.clean.slice(0, MAX_CARACTERES_DESCRICAO),
-        v: item.transacao.amountCents,
+        v: categorizationAmountCents({
+          amountCents: item.transacao.amountCents,
+          description: item.clean,
+          flowType: item.transacao.flowType,
+        }),
         d: item.transacao.occurredOn,
       }
     })

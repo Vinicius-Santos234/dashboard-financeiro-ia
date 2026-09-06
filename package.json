@@ -12,6 +12,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "seed:usuarios": "tsx scripts/criar-usuarios-teste.mts",
     "migrar:demo": "tsx scripts/migrar-demo.ts",
+    "repair:card-flows": "node --require ./scripts/tsx-windows-userinfo.cjs --conditions=react-server --import tsx scripts/repair-card-flows.ts",
     "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.ts"
   },
   "dependencies": {

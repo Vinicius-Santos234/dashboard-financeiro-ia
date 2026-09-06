@@ -85,6 +85,25 @@ describe('categorizarTransacoes', () => {
     expect(resultado).toMatchObject({ category: 'receita', categorySource: 'rule' })
   })
 
+  it('envia compra positiva de cartão como despesa e resolve pagamento sem IA', async () => {
+    const provider = new ProviderFake()
+    const plano = planejarCategorizacao(
+      [
+        { ...transacao(1, 'COMPRA CARTAO'), amountCents: 5000, flowType: 'expense' as const },
+        { ...transacao(2, 'PAGAMENTO RECEBIDO'), amountCents: -5000, flowType: 'transfer' as const },
+      ],
+      []
+    )
+
+    const resultado = await categorizarTransacoes(plano, provider)
+    expect(provider.chamadas).toHaveLength(1)
+    expect(provider.chamadas[0][0].v).toBe(-5000)
+    expect(resultado.find((r) => r.fingerprint.endsWith('_2'))).toMatchObject({
+      category: 'outros',
+      categorySource: 'rule',
+    })
+  })
+
   it('descarta ids desconhecidos e transforma resposta ausente em outros', async () => {
     const provider = new ProviderFake()
     provider.categorizar = async () => [

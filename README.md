@@ -80,6 +80,47 @@ O nome do estabelecimento permanece porque é necessário para categorizar. Isso
 
 Insights recebem somente totais por categoria do mês atual e anterior, nunca linhas individuais. Dados enviados à Gemini podem ser processados pelo Google fora do Brasil; consulte os termos aplicáveis à modalidade da API usada.
 
+## Fatura de cartão e o sinal do valor
+
+O sinal escrito no arquivo não tem significado universal. Em conta corrente, positivo é entrada. No CSV da fatura do Nubank, **positivo é compra** e negativo é crédito ou pagamento. Importar uma fatura com a convenção de conta corrente inverte todos os números do mês.
+
+Por isso o CSV exige escolher o tipo de extrato na tela de importação, e o OFX deduz pelo tipo de conta que o próprio arquivo declara. O valor bruto é sempre gravado como veio; o que a escolha define é o `flowType`, que decide como aquela linha participa dos totais:
+
+| `flowType` | O que é | Entra onde |
+|---|---|---|
+| `expense` | compra, despesa | gasto bruto da categoria |
+| `income` | salário, entrada | receita |
+| `refund` | estorno, devolução, crédito | abate o gasto, na categoria dele |
+| `transfer` | pagamento da fatura | em nenhum dos dois — só no próprio total |
+
+Pagamento de fatura é **transferência entre contas**, não gasto nem renda: contá-lo como despesa somaria a fatura inteira por cima das compras que ela paga. O reconhecimento é por descrição (`PAGTO FATURA`, `Pagamento recebido`, `PAYMENT - THANK YOU`) e só é consultado do lado do crédito, para que um estabelecimento chamado `PAG*ALGUMA LOJA` nunca saia dos gastos.
+
+Antes de confirmar, a tela mostra uma **prévia** com a contagem por tipo. Ela percorre o mesmo parser do import real e não grava nada — existe para a inversão de sinal aparecer antes, e não depois.
+
+### As três leituras de gasto
+
+O rollup guarda gasto e estorno **separados por categoria**, e as três leituras fecham entre si:
+
+```
+gasto bruto − estornos = gasto líquido
+```
+
+O gasto bruto é, por construção, a soma das fatias da pizza. Quando um estorno cai num mês sem despesa correspondente na mesma categoria — comprar em agosto e a devolução chegar em setembro —, é a separação que impede a pizza de somar um valor e o card mostrar outro. O gasto líquido **pode ser negativo**: num mês em que a devolução supera a compra, o dinheiro voltou, e esconder isso atrás de um zero seria perder a informação.
+
+### Limitação conhecida
+
+Se você importar **a conta corrente e a fatura do mesmo cartão**, o pagamento da fatura aparece como transferência no extrato do cartão, mas como despesa no da conta corrente — e as compras da fatura já estão contadas. O gasto do mês fica somado duas vezes. Hoje o app não reconcilia lançamentos entre contas; importe um ou o outro.
+
+### Corrigir faturas importadas antes disso
+
+Transações gravadas antes desta versão não têm `flowType` e foram interpretadas pela convenção de conta corrente. O script abaixo reclassifica **apenas os arquivos que você nomear**, e roda em modo simulação por padrão:
+
+```bash
+npm run repair:card-flows -- --email=voce@exemplo.com --file=fatura.csv
+```
+
+Ele imprime o que faria — contagem por tipo e os totais projetados de cada mês. Para aplicar, acrescente `--apply` e `--project=<id-do-firebase>`; o `--project` existe para o comando falhar se o ambiente carregado não for o que você pensa. Antes de escrever, ele salva um backup em `.local-backups/` (ignorado pelo git, contém dados reais), recalcula os rollups do mês inteiro e apaga os insights daqueles meses, que foram gerados sobre os números antigos.
+
 ## Exclusão da conta
 
 Em `/conta`, a confirmação `EXCLUIR` executa `recursiveDelete` na árvore `users/{uid}`, depois remove o usuário do Firebase Auth e encerra o cookie de sessão. O uso de `recursiveDelete` é necessário porque excluir apenas o documento pai no Firestore não apaga subcoleções.

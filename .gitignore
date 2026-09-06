@@ -58,3 +58,6 @@ tests/fixtures/reais/
 # arquivos de build (com segredo no cache do Turbopack) para o repositorio.
 *.bak
 _next.bak/
+
+# Snapshot local criado antes de migrações financeiras. Pode conter dados reais.
+/.local-backups/

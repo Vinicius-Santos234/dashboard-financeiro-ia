@@ -6,6 +6,11 @@ import { mesAnterior, mesAtual, mesLegivel, mesSeguinte, mesValido } from '@/lib
 import { Numero } from '../numero'
 import { LinhaTransacao } from './linha'
 import { CategorizarPendentes } from './categorizar-pendentes'
+import {
+  gastoBrutoCents,
+  totalNetExpenseCents,
+  totalRefundCents,
+} from '@/lib/firestore/rollup'
 
 export default async function TransacoesPage({
   searchParams,
@@ -29,7 +34,10 @@ export default async function TransacoesPage({
     ? todas.filter((transacao) => (transacao.category ?? 'outros') === categoria)
     : todas
 
-  const saldo = rollup.totalInCents + rollup.totalOutCents
+  const gastoBruto = gastoBrutoCents(rollup)
+  const estornos = totalRefundCents(rollup)
+  const gastoLiquido = totalNetExpenseCents(rollup)
+  const saldo = rollup.totalInCents - gastoLiquido
 
   return (
     <div className="flex flex-col gap-10">
@@ -62,10 +70,22 @@ export default async function TransacoesPage({
         </nav>
       </header>
 
-      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-3">
-        <Numero rotulo="Entradas" valor={formatCents(rollup.totalInCents)} entrada />
-        <Numero rotulo="Saídas" valor={formatCents(rollup.totalOutCents)} />
-        <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
+      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
+        <Numero rotulo="Receitas" valor={formatCents(rollup.totalInCents)} entrada />
+        <Numero
+          rotulo="Gastos líquidos"
+          valor={formatCents(-gastoLiquido)}
+          detalhe={
+            estornos > 0
+              ? `${formatCents(-gastoBruto)} + ${formatCents(estornos)} em estornos`
+              : undefined
+          }
+        />
+        <Numero
+          rotulo="Pagamentos / transf."
+          valor={formatCents(rollup.totalTransferCents)}
+        />
+        <Numero rotulo="Resultado" valor={formatCents(saldo)} entrada={saldo >= 0} />
       </section>
 
       {!demo && <CategorizarPendentes key={mes} month={mes}

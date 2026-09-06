@@ -3,6 +3,11 @@
 import { useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { formatCents } from '@/lib/domain/money'
+import type {
+ FlowSummary,
+ StatementProfile,
+} from '@/lib/domain/financial-flow'
 import type { InspecaoCsv, CsvMapping } from '@/lib/sources/csv'
 import type { FormatoData } from '@/lib/sources/date'
 import type { LinhaDescartada } from '@/lib/sources/types'
@@ -15,7 +20,10 @@ type Resultado = {
  duplicadas: number
  descartadas: LinhaDescartada[]
  jaImportadoAntes: boolean
+ flowSummary: FlowSummary
 }
+
+type Previsao = Pick<Resultado, 'periodo' | 'lidas' | 'descartadas' | 'flowSummary'>
 
 const FORMATOS: { valor: FormatoData; rotulo: string }[] = [
  { valor: 'dd/mm/yyyy', rotulo: 'dia/mês/ano (31/12/2026)' },
@@ -30,6 +38,8 @@ export default function ImportarPage() {
  const [arquivo, setArquivo] = useState<File | null>(null)
  const [inspecao, setInspecao] = useState<InspecaoCsv | null>(null)
  const [mapping, setMapping] = useState<Partial<CsvMapping>>({})
+ const [financialProfile, setFinancialProfile] = useState<StatementProfile | ''>('')
+ const [previsao, setPrevisao] = useState<Previsao | null>(null)
  const [resultado, setResultado] = useState<Resultado | null>(null)
  const [erro, setErro] = useState<string | null>(null)
  const [ocupado, setOcupado] = useState(false)
@@ -39,8 +49,42 @@ export default function ImportarPage() {
  function limpar() {
  setInspecao(null)
  setMapping({})
+ setFinancialProfile('')
+ setPrevisao(null)
  setResultado(null)
  setErro(null)
+ }
+
+ function bodyDaImportacao(): FormData | null {
+ if (!arquivo) return null
+ const body = new FormData()
+ body.set('arquivo', arquivo)
+ body.set('source', ehCsv ? 'csv' : 'ofx')
+ if (ehCsv) {
+ body.set('mapping', JSON.stringify(mapping))
+ body.set('financialProfile', financialProfile)
+ }
+ return body
+ }
+
+ async function prever() {
+ const body = bodyDaImportacao()
+ if (!body) return
+ setErro(null)
+ setOcupado(true)
+ try {
+ const r = await fetch('/api/imports?prever=1', { method: 'POST', body })
+ const json = await r.json()
+ if (!r.ok) {
+ setErro(json.erro ?? 'Não foi possível montar a prévia.')
+ return
+ }
+ setPrevisao(json)
+ } catch {
+ setErro('Não foi possível montar a prévia. Verifique a conexão e tente novamente.')
+ } finally {
+ setOcupado(false)
+ }
  }
 
  async function escolher(f: File | null) {
@@ -77,10 +121,8 @@ export default function ImportarPage() {
  setOcupado(true)
 
  try {
- const body = new FormData()
- body.set('arquivo', arquivo)
- body.set('source', ehCsv ? 'csv' : 'ofx')
- if (ehCsv) body.set('mapping', JSON.stringify(mapping))
+ const body = bodyDaImportacao()
+ if (!body) return
 
  const r = await fetch('/api/imports', { method: 'POST', body })
  const json = await r.json()
@@ -103,7 +145,10 @@ export default function ImportarPage() {
 
  const faltaMapear =
  ehCsv &&
- (!mapping.colunaData || !mapping.colunaDescricao || !mapping.colunaValor)
+ (!mapping.colunaData ||
+  !mapping.colunaDescricao ||
+  !mapping.colunaValor ||
+  !financialProfile)
 
  return (
  <div className="flex flex-col gap-6">
@@ -140,33 +185,59 @@ export default function ImportarPage() {
  detectado — {inspecao.totalLinhas} linhas encontradas.
  </p>
 
+ <label className="mt-4 flex flex-col gap-1.5 text-sm">
+ <span className="font-medium">Como o arquivo representa os valores?</span>
+ <select
+ value={financialProfile}
+ onChange={(e) => {
+ setFinancialProfile(e.target.value as StatementProfile | '')
+ setPrevisao(null)
+ }}
+ className="rounded-md border border-linha-forte px-3 py-2 text-sm"
+ >
+ <option value="">Escolha…</option>
+ <option value="bank_account">Conta bancária — positivo é entrada</option>
+ <option value="credit_card_positive_expenses">
+ Cartão Nubank — positivo é compra
+ </option>
+ <option value="credit_card_negative_expenses">
+ Cartão — negativo é compra
+ </option>
+ </select>
+ <span className="text-xs text-fraco">
+ Pagamentos de fatura serão identificados como transferências e não entrarão
+ em gastos ou receitas.
+ </span>
+ </label>
+
  <div className="mt-4 grid gap-4 sm:grid-cols-2">
  <Seletor
  rotulo="Data"
  colunas={inspecao.colunas}
  valor={mapping.colunaData}
- onChange={(v) => setMapping({ ...mapping, colunaData: v })}
+ onChange={(v) => { setMapping({ ...mapping, colunaData: v }); setPrevisao(null) }}
  />
  <Seletor
  rotulo="Descrição"
  colunas={inspecao.colunas}
  valor={mapping.colunaDescricao}
- onChange={(v) => setMapping({ ...mapping, colunaDescricao: v })}
+ onChange={(v) => { setMapping({ ...mapping, colunaDescricao: v }); setPrevisao(null) }}
  />
  <Seletor
  rotulo="Valor (ou entradas)"
  colunas={inspecao.colunas}
  valor={mapping.colunaValor}
- onChange={(v) => setMapping({ ...mapping, colunaValor: v })}
+ onChange={(v) => { setMapping({ ...mapping, colunaValor: v }); setPrevisao(null) }}
  />
  <Seletor
  rotulo="Saídas (se houver coluna separada)"
  colunas={inspecao.colunas}
  valor={mapping.colunaValorSaida}
  opcional
- onChange={(v) =>
+ onChange={(v) => {
  setMapping({ ...mapping, colunaValorSaida: v || undefined })
- }
+ setPrevisao(null)
+ }}
  />
  </div>
 
@@ -174,12 +245,13 @@ export default function ImportarPage() {
  <span className="font-medium">Formato da data</span>
  <select
  value={mapping.formatoData ?? ''}
- onChange={(e) =>
+ onChange={(e) => {
  setMapping({
  ...mapping,
  formatoData: (e.target.value || undefined) as FormatoData,
  })
- }
+ setPrevisao(null)
+ }}
  className="rounded-md border border-linha-forte px-3 py-2 text-sm"
  >
  <option value="">Detectar automaticamente</option>
@@ -242,14 +314,32 @@ export default function ImportarPage() {
  </p>
  )}
 
+ {previsao && !resultado && <Previa r={previsao} />}
+
  {arquivo && !resultado && (
- <div>
- <Button onClick={importar} disabled={ocupado || faltaMapear}>
- {ocupado ? 'Processando…' : 'Importar'}
+ <div className="flex flex-wrap items-center gap-3">
+ <Button
+ onClick={previsao ? importar : prever}
+ disabled={ocupado || faltaMapear}
+ >
+ {ocupado
+ ? 'Processando…'
+ : previsao
+   ? 'Confirmar importação'
+   : 'Revisar importação'}
  </Button>
+ {previsao && (
+ <button
+ type="button"
+ onClick={() => setPrevisao(null)}
+ className="text-sm text-suave underline decoration-linha-forte underline-offset-4"
+ >
+ Alterar opções
+ </button>
+ )}
  {faltaMapear && (
  <p className="mt-2 text-sm text-suave">
- Escolha as colunas de data, descrição e valor.
+ Escolha as colunas e o tipo de extrato.
  </p>
  )}
  </div>
@@ -260,6 +350,32 @@ export default function ImportarPage() {
  setArquivo(null)
  if (inputRef.current) inputRef.current.value = ''
  }} />}
+ </div>
+ )
+}
+
+function Previa({ r }: { r: Previsao }) {
+ const s = r.flowSummary
+ return (
+ <div className="rounded-md border border-linha-forte p-6">
+ <h2 className="text-sm font-medium">Confira antes de importar</h2>
+ <p className="mt-1 text-sm text-suave">
+ {r.lidas} lançamentos · {r.periodo.de} a {r.periodo.ate}
+ </p>
+ <dl className="mt-4 grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+ <Item rotulo={`Compras (${s.expenseCount})`} valor={formatCents(s.grossExpenseCents)} />
+ <Item rotulo={`Receitas (${s.incomeCount})`} valor={formatCents(s.incomeCents)} />
+ <Item rotulo={`Pagamentos/transf. (${s.transferCount})`} valor={formatCents(s.transferCents)} />
+ <Item rotulo={`Créditos/estornos (${s.refundCount})`} valor={formatCents(s.refundCents)} />
+ </dl>
+ <p className="mt-4 text-sm">
+ Gasto líquido previsto: <strong>{formatCents(s.netExpenseCents)}</strong>
+ </p>
+ {r.descartadas.length > 0 && (
+ <p className="mt-2 text-sm text-suave">
+ {r.descartadas.length} linha(s) não serão importadas.
+ </p>
+ )}
  </div>
  )
 }
@@ -358,7 +474,7 @@ function Resumo({ r, onNovo }: { r: Resultado; onNovo: () => void }) {
  )
 }
 
-function Item({ rotulo, valor }: { rotulo: string; valor: number }) {
+function Item({ rotulo, valor }: { rotulo: string; valor: string | number }) {
  return (
  <div>
  <dt className="text-suave">{rotulo}</dt>
