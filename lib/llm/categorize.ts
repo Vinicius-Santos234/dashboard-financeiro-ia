@@ -7,6 +7,7 @@ import { MAX_CARACTERES_DESCRICAO } from '@/lib/domain/limites'
 import {
   categorizationAmountCents,
   resolvedFlowType,
+  semSinalParaCategorizar,
   type FlowType,
 } from '@/lib/domain/financial-flow'
 
@@ -104,6 +105,22 @@ export function planejarCategorizacao(
         fingerprint: transacao.fingerprint,
         month: transacao.month,
         category: 'receita',
+        categorySource: 'rule',
+        confidence: 1,
+        descriptionClean: clean,
+        expectedRevision: transacao.categoryRevision ?? 0,
+      })
+      continue
+    }
+
+    // O anonimizador esvaziou a descrição? Então a IA receberia uma palavra, e
+    // uma palavra não vira categoria. Gastar chamada paga aqui é comprar uma
+    // resposta que já se conhece.
+    if (semSinalParaCategorizar(clean)) {
+      prontas.push({
+        fingerprint: transacao.fingerprint,
+        month: transacao.month,
+        category: 'outros',
         categorySource: 'rule',
         confidence: 1,
         descriptionClean: clean,

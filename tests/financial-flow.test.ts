@@ -4,6 +4,8 @@ import {
   classifyTransactions,
   displayAmountCents,
   isCardPayment,
+  isInternalMovement,
+  semSinalParaCategorizar,
   summarizeFlows,
 } from '@/lib/domain/financial-flow'
 
@@ -135,4 +137,54 @@ describe('semântica financeira do extrato', () => {
       classifyFlow({ amountCents: -15000, description }, 'credit_card_negative_expenses')
     ).toBe('expense')
   })
+
+  /**
+   * O extrato que revelou o buraco: uma conta Nubank usada como canal de Pix e
+   * de investimento, sem uma única compra. Tratar todo negativo como gasto
+   * fazia **87% dos "gastos" não serem gasto** — R$ 1.622 de fatura de cartão
+   * e R$ 432 de aplicação, contra R$ 307 de despesa de verdade.
+   */
+  it.each([
+    ['Pagamento de fatura', -151617],
+    ['PAGTO FATURA', -10591],
+    ['Aplicação RDB', -20000],
+    ['Aplicação Fundo - Itaú Gold Distribuidores Multimercado FIF CIC - Resp. Ltda', -10000],
+    ['Resgate RDB', 12000],
+    ['Valor adicionado na conta por cartão de crédito - Valor adicionado para Pix no Crédito', 2500],
+  ])('em conta corrente, %s é movimentação interna e não entra no resultado', (description, amountCents) => {
+    expect(isInternalMovement(description)).toBe(true)
+    expect(classifyFlow({ amountCents, description }, 'bank_account')).toBe('transfer')
+  })
+
+  /**
+   * O outro lado, e é o que mantém a correção honesta: o ambíguo fica de fora.
+   * Chutar "transferência" em Pix enviado esconderia gasto real — errar para
+   * menos é o lado que ninguém audita.
+   */
+  it.each([
+    ['Transferência enviada pelo Pix - César Henrique Giacomino', -2500, 'expense'],
+    ['PAGAMENTO DE BOLETO', -8000, 'expense'],
+    ['SUPERMERCADO EXTRA', -12000, 'expense'],
+    ['Débito em conta', -1299, 'expense'],
+    ['Transferência recebida pelo Pix - JMV SERVICOS', 149943, 'income'],
+    ['SALARIO EMPRESA', 300000, 'income'],
+  ])('%s continua sendo %s em conta corrente', (description, amountCents, esperado) => {
+    expect(isInternalMovement(description)).toBe(false)
+    expect(classifyFlow({ amountCents, description }, 'bank_account')).toBe(esperado)
+  })
+
+  /**
+   * `Transferência enviada pelo Pix - FULANO - •••.123.456-•• - BANCO` vira
+   * exatamente `"Transferência"` depois do anonimizador. Mandar isso à LLM é
+   * pagar por uma resposta que já se conhece — eram 9 das 16 despesas.
+   */
+  it.each(['Transferência', 'Débito em conta', 'Crédito em conta', 'Pix', 'PIX ENVIADO'])(
+    '%s não tem sinal para categorizar e não vai à IA',
+    (clean) => expect(semSinalParaCategorizar(clean)).toBe(true)
+  )
+
+  it.each(['IFD*IFOOD SAO PAULO', 'Aplicação RDB', 'SUPERMERCADO EXTRA', 'Pagamento de fatura'])(
+    '%s tem sinal e continua indo à IA',
+    (clean) => expect(semSinalParaCategorizar(clean)).toBe(false)
+  )
 })

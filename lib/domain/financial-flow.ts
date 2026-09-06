@@ -71,11 +71,52 @@ export function isCardPayment(description: string): boolean {
   return COMPLEMENTO_DE_PAGAMENTO.test(text) || /^(pagamento|pagto|pgto|payment)\.?$/.test(text)
 }
 
+/**
+ * Movimento INTERNO de conta corrente: o dinheiro muda de lugar, não some nem
+ * aparece.
+ *
+ * Isto existe porque a versão anterior tratava conta corrente como se todo
+ * negativo fosse gasto e todo positivo fosse renda, e num extrato real isso é
+ * grosseiramente falso. Medido no extrato que motivou a correção: **87% dos
+ * "gastos" não eram gasto** — R$ 1.622 de fatura de cartão e R$ 432 de
+ * aplicação, contra R$ 307 de despesa de verdade. Do outro lado, R$ 279 de
+ * "receita" era resgate de investimento e Pix no crédito.
+ *
+ * Cada padrão aqui é inequívoco. O que é ambíguo fica **de fora** de
+ * propósito:
+ *
+ *   - **Pix enviado a uma pessoa continua despesa.** Pagar o aluguel por Pix é
+ *     gasto; mandar dinheiro para a própria conta não é. O extrato não
+ *     distingue, e chutar "transferência" esconderia gasto real — errar para
+ *     menos é o lado que ninguém audita.
+ *   - **Boleto continua despesa.** `PAGAMENTO DE BOLETO` é conta paga, não
+ *     movimentação interna, e é por isso que este predicado não reaproveita o
+ *     `isCardPayment`, que é mais frouxo por viver num contexto onde só há
+ *     fatura.
+ */
+const MOVIMENTOS_INTERNOS: readonly RegExp[] = [
+  // Fatura do cartão paga pela conta. Sem isto ela vira o maior "gasto" do
+  // mês, somado POR CIMA das compras que ela quita.
+  /\b(pagamento|pagto|pgto) (de )?fatura\b/,
+  // Dinheiro indo para investimento e voltando dele.
+  /^aplicacao\b/,
+  /^resgate\b/,
+  // "Pix no crédito": entra na conta vindo do cartão e sai no mesmo instante.
+  // Contado como receita, inflava a entrada do mês sem nada ter entrado.
+  /valor adicionado na conta por cartao de credito/,
+]
+
+export function isInternalMovement(description: string): boolean {
+  const text = normalizedText(description)
+  return MOVIMENTOS_INTERNOS.some((padrao) => padrao.test(text))
+}
+
 export function classifyFlow(
   transaction: Pick<RawTransaction, 'amountCents' | 'description'>,
   profile: StatementProfile
 ): FlowType {
   if (profile === 'bank_account') {
+    if (isInternalMovement(transaction.description)) return 'transfer'
     return transaction.amountCents >= 0 ? 'income' : 'expense'
   }
 
@@ -197,4 +238,33 @@ export function summarizeFlows(transactions: readonly FlowTransaction[]): FlowSu
     summary.grossExpenseCents - summary.refundCents
   )
   return summary
+}
+
+/**
+ * A descrição sobrou sem sinal nenhum depois do anonimizador?
+ *
+ * `Transferência enviada pelo Pix - FULANO - •••.123.456-•• - BANCO ...` vira
+ * exatamente **`"Transferência"`**, porque a contraparte é dado pessoal e sai
+ * antes de qualquer chamada à IA (spec §6). O que chega ao modelo é uma
+ * palavra — e uma palavra não tem como virar categoria.
+ *
+ * Mandar isso para a LLM é gastar chamada paga para receber `outros`, que já
+ * se sabia de antemão. No extrato que motivou a correção eram **9 das 16
+ * despesas**. A resposta é a mesma; o custo, não.
+ */
+const SEM_SINAL = new Set([
+  'transferencia',
+  'transferencia enviada',
+  'transferencia recebida',
+  'pix',
+  'pix enviado',
+  'pix recebido',
+  'debito em conta',
+  'credito em conta',
+  'debito',
+  'credito',
+])
+
+export function semSinalParaCategorizar(descriptionClean: string): boolean {
+  return SEM_SINAL.has(normalizedText(descriptionClean).replace(/[.\-]+$/, ''))
 }

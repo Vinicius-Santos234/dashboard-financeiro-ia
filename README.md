@@ -91,7 +91,7 @@ Por isso o CSV exige escolher o tipo de extrato na tela de importação, e o OFX
 | `expense` | compra, despesa | gasto bruto da categoria |
 | `income` | salário, entrada | receita |
 | `refund` | estorno, devolução, crédito | abate o gasto, na categoria dele |
-| `transfer` | pagamento da fatura | em nenhum dos dois — só no próprio total |
+| `transfer` | pagamento de fatura, aplicação e resgate de investimento, Pix no crédito | em nenhum dos dois — só no próprio total |
 
 Pagamento de fatura é **transferência entre contas**, não gasto nem renda: contá-lo como despesa somaria a fatura inteira por cima das compras que ela paga. O reconhecimento é por descrição (`PAGTO FATURA`, `Pagamento recebido`, `PAYMENT - THANK YOU`) e só é consultado do lado do crédito, para que um estabelecimento chamado `PAG*ALGUMA LOJA` nunca saia dos gastos.
 
@@ -107,9 +107,21 @@ gasto bruto − estornos = gasto líquido
 
 O gasto bruto é, por construção, a soma das fatias da pizza. Quando um estorno cai num mês sem despesa correspondente na mesma categoria — comprar em agosto e a devolução chegar em setembro —, é a separação que impede a pizza de somar um valor e o card mostrar outro. O gasto líquido **pode ser negativo**: num mês em que a devolução supera a compra, o dinheiro voltou, e esconder isso atrás de um zero seria perder a informação.
 
-### Limitação conhecida
+### Movimentação interna de conta corrente
 
-Se você importar **a conta corrente e a fatura do mesmo cartão**, o pagamento da fatura aparece como transferência no extrato do cartão, mas como despesa no da conta corrente — e as compras da fatura já estão contadas. O gasto do mês fica somado duas vezes. Hoje o app não reconcilia lançamentos entre contas; importe um ou o outro.
+Extrato de conta não é lista de compras. Tratar todo negativo como gasto produz números grosseiramente falsos: num extrato real medido aqui, **87% dos "gastos" não eram gasto** — R$ 1.622 de fatura de cartão e R$ 432 de aplicação em investimento, contra R$ 307 de despesa de verdade.
+
+Por isso estes padrões viram `transfer` também em conta corrente, e saem do resultado do mês:
+
+- `Pagamento de fatura` / `PAGTO FATURA` — a fatura quita compras que, se você importar o extrato do cartão, já estão contadas;
+- `Aplicação …` e `Resgate …` — dinheiro indo para o investimento e voltando dele;
+- `Valor adicionado na conta por cartão de crédito` — o "Pix no crédito" entra e sai no mesmo instante.
+
+**O ambíguo fica de fora, de propósito.** `Transferência enviada pelo Pix` para uma pessoa continua despesa: pagar o aluguel por Pix é gasto, mandar dinheiro para si mesmo não é, e o extrato não distingue. Chutar "transferência" esconderia gasto real — errar para menos é o lado que ninguém audita. `PAGAMENTO DE BOLETO` também continua despesa, porque é conta paga.
+
+### Descrição sem sinal não vai à IA
+
+`Transferência enviada pelo Pix - FULANO - •••.123.456-•• - BANCO …` vira exatamente **`Transferência`** depois do anonimizador, porque a contraparte é dado pessoal e sai antes de qualquer chamada. Uma palavra não vira categoria: essas linhas recebem `outros` de forma determinística, sem gastar chamada paga para comprar uma resposta que já se conhece. No extrato medido eram 9 das 16 despesas.
 
 ### Corrigir faturas importadas antes disso
 
