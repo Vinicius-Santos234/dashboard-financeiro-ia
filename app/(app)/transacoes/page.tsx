@@ -128,17 +128,40 @@ export default async function TransacoesPage({
         </div>
       ) : (
         <section>
-          <div className="grid grid-cols-[auto_1fr_auto] items-baseline gap-x-6 border-b border-linha pb-3">
-            <span className="rotulo">Data</span>
-            <span className="rotulo">Descrição</span>
-            <span className="rotulo text-right">Valor</span>
-          </div>
-
-          <ul>
-            {transacoes.map((t) => (
-              <LinhaTransacao key={t.fingerprint} transacao={t} demo={demo} />
-            ))}
-          </ul>
+          {/* Uma TABELA de verdade, e não `ul` com um cabeçalho desenhado por
+              cima.
+              A primeira versão do redesign trocou a tabela por lista porque dá
+              mais controle visual — e o custo foi invisível na tela e enorme
+              no leitor de tela: `Data / Descrição / Valor` viravam texto solto
+              que não rotulava nada, e cada célula era lida sem dizer de qual
+              coluna era. Com `<th scope="col">`, "14/08" é anunciado como
+              *Data 14/08*.
+              O visual não mudou: `table-fixed` mais três larguras reproduz o
+              `grid-cols-[auto_1fr_auto]` que estava aqui. */}
+          <table className="w-full table-fixed border-collapse text-left">
+            <caption className="sr-only">
+              Lançamentos de {mesLegivel(mes)}
+              {categoria ? `, categoria ${CATEGORIA_LABEL[categoria]}` : ''}
+            </caption>
+            <thead>
+              <tr className="border-b border-linha">
+                <th scope="col" className="rotulo w-16 pb-3 font-medium">
+                  Data
+                </th>
+                <th scope="col" className="rotulo pb-3 font-medium">
+                  Descrição
+                </th>
+                <th scope="col" className="rotulo w-32 pb-3 text-right font-medium">
+                  Valor
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {transacoes.map((t) => (
+                <LinhaTransacao key={t.fingerprint} transacao={t} demo={demo} />
+              ))}
+            </tbody>
+          </table>
 
           <p className="mt-6 text-xs text-fraco">
             {transacoes.length} lançamento{transacoes.length === 1 ? '' : 's'}

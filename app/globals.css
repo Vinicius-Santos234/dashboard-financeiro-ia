@@ -79,7 +79,16 @@
   /* Texto — creme, nunca branco puro. */
   --texto: #f5f1ea;
   --suave: #a8a099;
-  --fraco: #6b6560;
+  /* O DEGRAU MAIS BAIXO É O QUE REPROVA, e não por acaso.
+     No tema escuro a hierarquia se constrói escurecendo em direção ao fundo,
+     então o último degrau é, por construção, o mais perto do limite. Medindo
+     a paleta inteira, quatro tokens tinham folga enorme (17,6 · 8,6 · 7,7 ·
+     5,6) e só este reprovava: `#6b6560` dava 3,44:1, abaixo dos 4,5:1 de AA —
+     carregando os 50 `.rotulo` de 11px em caixa alta, que é a combinação mais
+     difícil de ler que existe aqui.
+     `#857f7a` mantém R > G > B com os mesmos degraus de 6 e 5 — é o que faz
+     ele ler quente e não cinza — e passa nos três fundos: 5,01 · 4,76 · 4,51. */
+  --fraco: #857f7a;
 
   /* Hairlines. rgba e não cinza sólido: é uma aresta pegando luz, não um
      traço desenhado — que é exatamente a metáfora física. */
@@ -117,6 +126,29 @@
     );
     background-size: 3px 3px;
     -webkit-font-smoothing: antialiased;
+  }
+
+  /* A tese deste design é que o app inteiro se move devagar — 300ms em toda
+     superfície interativa, rolagem suave. Para quem tem sensibilidade
+     vestibular, isso é exatamente o que a preferência do sistema pede para
+     desligar, e é justamente o design mais cuidadoso com movimento que precisa
+     respeitá-la.
+     `0.01ms` em vez de `0`: transição de duração zero não dispara
+     `transitionend`, e componente que espera esse evento para limpar estado
+     ficaria preso. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 
   ::selection {
