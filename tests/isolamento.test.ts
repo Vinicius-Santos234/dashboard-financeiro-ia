@@ -73,7 +73,14 @@ async function entrar(auth: Auth, email: string, senha: string, quem: string) {
   }
 }
 
-const TX_DE_B = 'h_teste_isolamento_do_b'
+/**
+ * Um id de transação sob a árvore de B — que **não precisa existir**.
+ *
+ * As Security Rules são avaliadas antes de o Firestore ir olhar se há
+ * documento no caminho, então A é barrada por estar fora da própria árvore, e
+ * não por o documento faltar. É por isso que este teste não semeia nada.
+ */
+const DOC_DE_B = 'h_teste_isolamento_do_b'
 
 describe.skipIf(!configurado)('isolamento entre usuários', () => {
   let A: { app: FirebaseApp; auth: Auth; db: Firestore }
@@ -89,28 +96,25 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
     uidB = (await entrar(B.auth, B_EMAIL!, B_SENHA!, 'B')).user.uid
     expect(uidA).not.toBe(uidB)
 
-    // O seed de B agora vai pelo Admin SDK.
+    // NÃO existe seed aqui, e isso é uma correção.
     //
-    // Antes ele usava o SDK cliente — e aquele `setDoc` bem-sucedido ERA a
-    // prova de que existia um caminho de escrita direta do cliente, capaz de
-    // quebrar a invariante transação↔rollup e de contornar a conta demo
-    // somente-leitura. O teste demonstrava o buraco e ninguém leu assim.
-    const { adminDb } = await import('@/lib/firebase/admin')
-    await adminDb().doc(`users/${uidB}/transactions/${TX_DE_B}`).set({
-      accountId: 'conta-do-b',
-      importId: null,
-      occurredOn: '2026-08-14',
-      month: '2026-08',
-      amountCents: -4790,
-      descriptionRaw: 'SEGREDO DO B',
-      descriptionClean: 'SEGREDO DO B',
-      fitid: null,
-      category: null,
-      categorySource: null,
-      confidence: null,
-      source: 'ofx',
-      aiOptOut: false,
-    })
+    // A versão anterior semeava um documento de B — primeiro pelo SDK cliente,
+    // depois pelo Admin SDK. As duas estavam erradas por motivos diferentes:
+    //
+    //   - pelo cliente, aquele `setDoc` bem-sucedido ERA a prova de que existia
+    //     escrita direta do cliente, capaz de quebrar a invariante
+    //     transação↔rollup. O teste demonstrava o buraco e ninguém leu assim.
+    //
+    //   - pelo Admin SDK, o teste passou a exigir a chave de serviço — que
+    //     deliberadamente NÃO está nos secrets do CI, por ser a credencial mais
+    //     poderosa do projeto. O teste quebrou no CI por depender de algo que a
+    //     gente decidiu não ter lá.
+    //
+    // E o seed nunca foi necessário: as Security Rules avaliam **caminho, não
+    // existência**. A tentando ler sob o uid de B é negada mesmo que não haja
+    // documento nenhum ali. O seed só servia ao controle positivo, que agora é
+    // feito de outro jeito — B listando a própria coleção, que resolve mesmo
+    // vazia.
   }, 60_000)
 
   afterAll(async () => {
@@ -120,17 +124,26 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
     await deleteApp(B.app).catch(() => {})
   })
 
-  it('B consegue ler o próprio documento', async () => {
-    // Se este falhar, os outros passariam por motivo errado — negar tudo
-    // também "isola".
-    const snap = await getDoc(doc(B.db, `users/${uidB}/transactions/${TX_DE_B}`))
-    expect(snap.exists()).toBe(true)
-    expect(snap.data()!.descriptionRaw).toBe('SEGREDO DO B')
+  it('B lê a própria árvore — o mesmo caminho que A não lê', async () => {
+    // O controle positivo, e ele é indispensável: sem ele, o teste seguinte
+    // passaria igual se a leitura estivesse negada para todo mundo, ou se o
+    // caminho simplesmente não existisse. Aqui fica provado que
+    // `users/{uidB}/transactions` É legível — só que apenas pelo dono.
+    //
+    // Listar resolve mesmo com a coleção vazia, então isto não depende de
+    // nenhum dado semeado. E não pode depender: o cliente perdeu a escrita, e
+    // semear pelo Admin SDK exigiria a chave de serviço, que de propósito não
+    // está nos secrets do CI.
+    await expect(
+      getDocs(collection(B.db, `users/${uidB}/transactions`))
+    ).resolves.toBeDefined()
   })
 
-  it('A não lê o documento de B nem sabendo o caminho exato', async () => {
+  it('A não lê sob o uid de B nem sabendo o caminho exato', async () => {
+    // Negado pelo CAMINHO, não pela existência: a regra é avaliada antes de o
+    // Firestore olhar se há documento ali.
     await expect(
-      getDoc(doc(A.db, `users/${uidB}/transactions/${TX_DE_B}`))
+      getDoc(doc(A.db, `users/${uidB}/transactions/${DOC_DE_B}`))
     ).rejects.toThrow(/permission|insufficient/i)
   })
 
@@ -185,8 +198,9 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
   })
 
   it('A continua LENDO a própria árvore', async () => {
-    // Contraprova: se leitura também estivesse negada, os testes de isolamento
-    // passariam por "está tudo bloqueado" em vez de por isolamento de verdade.
+    // Par do teste acima: negar a escrita do cliente não podia custar a
+    // leitura, senão o app inteiro para de renderizar. É o que separa "o
+    // cliente só lê" de "o cliente não faz nada".
     await expect(
       getDocs(collection(A.db, `users/${uidA}/transactions`))
     ).resolves.toBeDefined()
@@ -195,7 +209,7 @@ describe.skipIf(!configurado)('isolamento entre usuários', () => {
   it('quem não fez login não lê nada', async () => {
     const anon = novaInstancia('anonimo')
     await expect(
-      getDoc(doc(anon.db, `users/${uidB}/transactions/${TX_DE_B}`))
+      getDoc(doc(anon.db, `users/${uidB}/transactions/${DOC_DE_B}`))
     ).rejects.toThrow(/permission|insufficient/i)
     await deleteApp(anon.app)
   })
