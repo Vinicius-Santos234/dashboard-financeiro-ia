@@ -1,19 +1,39 @@
 # Spec 002 — Open Finance como segunda fonte
 
-**Status:** aprovada, não iniciada
-**Data:** 2026-09-05
-**Depende de:** `specs/001-v1.md` (todas as etapas concluídas)
+**Status:** aprovada, não iniciada. **Realinhada em 07/09** pela `specs/003-cartao.md`
+**Data:** 2026-09-05 (alvo revisado em 2026-09-07)
+**Depende de:** `specs/001-v1.md` (concluída) e `specs/003-cartao.md` (o alvo passa a ser cartão)
 
 ---
 
 ## 1. Objetivo
 
-Ler transações direto do banco por Open Finance, sem arquivo no meio, e fazer
-essas transações entrarem pelo **mesmo pipeline** que o OFX e o CSV já usam:
+Ler transações **de cartão de crédito** direto do banco por Open Finance, sem arquivo
+no meio, e fazê-las entrar pelo **mesmo pipeline** que o OFX e o CSV já usam:
 fingerprint, deduplicação, rollup transacional, anonimização e categorização.
 
-**Uma frase de sucesso:** eu conecto minha conta uma vez e, daí em diante, o
-dashboard fica atualizado sozinho — sem eu exportar nada.
+**Uma frase de sucesso:** eu conecto meu cartão uma vez e, daí em diante, a fatura
+chega sozinha — sem eu exportar nada.
+
+### O realinhamento de 07/09, e por que ele não custa nada
+
+A `specs/003-cartao.md` estreitou o produto para **fatura de cartão**. A dúvida
+levantada na hora foi se isso conflitava com esta spec. **Não conflita — encaixa
+melhor**, por três motivos:
+
+1. O Open Finance Brasil trata **cartão de crédito como categoria de dados própria**:
+   contas de cartão, **faturas** e as transações de cada fatura. A API é organizada em
+   torno exatamente do objeto que o produto passou a ser.
+2. Arquivo entrega um CSV plano que **nós** precisamos interpretar como fatura; o Open
+   Finance entrega a fatura **já como fatura**, com fechamento e vencimento — que é o
+   que a C8 da 003 precisa e que o arquivo pode não trazer.
+3. Ele dá o **limite do cartão**, a única informação útil aqui que arquivo nenhum
+   entrega. *"Você já usou 60% do limite"* é uma frase que só existe por esta fonte.
+
+**O que muda nesta spec:** o alvo. Onde antes se lia "conta", leia-se **cartão**; a
+F1 deixa de perguntar *"sandbox ou real?"* e passa a perguntar **"o Meu Pluggy cobre
+cartão?"**. Nada da arquitetura muda — `SyncAdapter`, `ultimaSync`, webhook e o
+direito por usuário continuam como estavam.
 
 ---
 
@@ -67,6 +87,8 @@ permanente.
 | E5 | Sincronização | **Sob demanda + webhook**, nunca polling | Cada leitura da API é uma requisição cobrada |
 | E6 | Identidade da transação | `id` da Pluggy, como o FITID do OFX | Mesma família do que já existe (§4.3 da 001) |
 | E7 | Onde o segredo mora | Só no servidor, nunca no cliente | O `connectToken` do widget é emitido pelo servidor e é de vida curta |
+| E8 | **Qual dado buscar** | **Cartão de crédito** — contas de cartão, faturas e transações de fatura | Realinhamento de 07/09 (§1). Conta corrente pelo Open Finance fica fora (§8) |
+| E9 | **O limite do cartão** | **Lido e guardado quando a fonte entregar** | É a única informação que justifica a fonte por si só; arquivo nenhum a traz |
 
 ---
 
@@ -283,17 +305,23 @@ comum de não terminar o que existe.
 | Belvo ou Tecnospeed como segundo provedor | O `SyncAdapter` deixa a porta aberta; sem motivo para abrir agora |
 | Conexão para outros usuários | Ver §7. Exige plano pago; o direito por usuário deixa a porta pronta |
 | Sincronização automática por agendamento | Webhook cobre o caso real. Cron seria requisição paga a cada disparo |
+| **Conta corrente pelo Open Finance** | O produto é de cartão (003 §2). Conta corrente segue importável por arquivo, que é o caso secundário — e o Open Finance **não consertaria o Pix** de qualquer forma |
 
 ---
 
 ## 9. Etapas e critério de aceite
 
-### F1 — Cliente e sandbox, sem UI
+### F1 — Cliente, e a pergunta que decide o resto
 - [ ] `lib/pluggy/client.ts` autentica e lista conectores
 - [ ] Credenciais em env server-only, ausentes do bundle
-- **Aceite:** um teste de integração conecta ao **sandbox** e lista transações
-  fictícias. Roda com credencial; pula com aviso quando não houver, como o
-  `isolamento.test.ts` já faz.
+- [ ] **Responder, com a API na mão: o Meu Pluggy entrega conta de cartão, fatura e
+      transação de fatura?** É a primeira coisa a verificar — se cobrir só conta
+      corrente, esta spec inteira vira acessório de um app que não é mais sobre conta,
+      e a decisão passa a ser adiá-la, não implementá-la
+- **Aceite:** um teste de integração lista **uma conta de cartão e as transações de
+  uma fatura**. Roda com credencial; pula com aviso quando não houver, como o
+  `isolamento.test.ts` já faz. O resultado da pergunta acima fica **escrito nesta
+  spec**, e não só no código.
 
 ### F2 — `SyncAdapter` e conversão
 - [ ] `lib/sources/pluggy.ts` devolve `ParseResult`
@@ -361,14 +389,18 @@ comum de não terminar o que existe.
 | A Pluggy mudar de política de gratuidade | O `SyncAdapter` isola o provedor. Se cair, o app volta a ser OFX/CSV — que continua funcionando |
 | Reautenticação periódica do Open Finance | Status na conexão e aviso na tela; o regulado exige renovação de consentimento |
 | Webhook público como superfície nova | Assinatura verificada, idempotência, e nenhuma ação destrutiva vinda dele |
+| **O Meu Pluggy não cobrir cartão** | É a F1, e por isso ela vem primeiro. Se não cobrir, a spec é **adiada** sem prejuízo: o app de cartão funciona inteiro por arquivo |
 
 ---
 
 ## 11. Pendências
 
 - [ ] Criar a conta no Meu Pluggy e obter Client ID/Secret
-- [ ] Confirmar se o Meu Pluggy dá acesso aos **conectores de sandbox** ou só aos
-      reais — muda a F1, e é a primeira coisa a verificar
+- [ ] **Confirmar se o Meu Pluggy cobre cartão de crédito** — conta de cartão, fatura
+      e transações de fatura. Substituiu, em 07/09, a pergunta antiga *"sandbox ou só
+      real?"*, que deixou de ser a que decide
+- [ ] Confirmar, em segundo lugar, se há acesso aos **conectores de sandbox** ou só
+      aos reais — muda como a F1 é testada, não se ela vale a pena
 - [ ] Ler os termos do Meu Pluggy na íntegra antes da F4, para o texto de §7 do
       README citar o que eles dizem, e não o que eu entendi
 - [ ] Definir o prazo de retenção de conta inativa (§7.1) — é um número que
