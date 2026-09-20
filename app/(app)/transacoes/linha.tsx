@@ -12,9 +12,12 @@ import { sugerirPadrao } from '@/lib/domain/rules'
 import {
   displayAmountCents,
   resolvedFlowType,
+  FLOW_EXPLICACAO,
+  FLOW_LABEL,
+  FLOW_TYPES,
   type FlowType,
 } from '@/lib/domain/financial-flow'
-import { alterarOptOut, corrigirCategoria } from './actions'
+import { alterarOptOut, corrigirCategoria, corrigirFluxoDaLinha } from './actions'
 
 interface Transacao {
   fingerprint: string
@@ -121,48 +124,41 @@ export function LinhaTransacao({
         <tr id={painelId} className={borda}>
           <td colSpan={3} className="pb-5 pl-16">
             <div className="flex flex-col gap-4">
-              {flowType === 'transfer' ? (
-                <p className="text-xs text-fraco">
-                  Esta movimentação fica visível, mas não entra em gastos, receitas ou categorias.
-                </p>
-              ) : demo ? (
+              {demo ? (
                 <p className="text-xs text-fraco">
                   A conta de demonstração é somente leitura. Crie uma conta para
                   corrigir categorias e criar regras.
                 </p>
               ) : (
                 <>
-                  <form action={corrigirCategoria} className="flex flex-col gap-3">
+                  {/* A correção de FLUXO vem primeiro, e existe para toda
+                      linha — inclusive para as que o classificador chamou de
+                      transferência. É justamente aí que ele erra em silêncio:
+                      `PAG*NOMEDALOJA` é uma maquininha, não um pagamento de
+                      fatura, e só a pessoa sabe. Spec 003 D5. */}
+                  <form action={corrigirFluxoDaLinha} className="flex flex-col gap-3">
                     <input type="hidden" name="fingerprint" value={t.fingerprint} />
 
+                    <p className="rotulo">O que é este lançamento</p>
                     <div className="flex flex-wrap gap-1.5">
-                      {(flowType === 'income'
-                        ? (['receita'] as const)
-                        : CATEGORIAS.filter((item) => item !== 'receita')).map(
-                        (item) => (
-                          <label
-                            key={item}
-                            className="cursor-pointer"
-                            title={CATEGORIA_LABEL[item]}
-                          >
-                            <input
-                              type="radio"
-                              name="category"
-                              value={item}
-                              defaultChecked={(t.category ?? 'outros') === item}
-                              className="peer sr-only"
-                            />
-                            <span className="flex items-center gap-2 rounded-full border border-linha px-3 py-1.5 text-xs text-suave transition-colors duration-300 peer-checked:border-texto peer-checked:text-texto hover:border-linha-forte">
-                              <span
-                                aria-hidden
-                                className="size-1.5 rounded-full"
-                                style={{ background: CATEGORIA_COR[item] }}
-                              />
-                              {CATEGORIA_LABEL[item]}
-                            </span>
-                          </label>
-                        )
-                      )}
+                      {FLOW_TYPES.map((item) => (
+                        <label
+                          key={item}
+                          className="cursor-pointer"
+                          title={FLOW_EXPLICACAO[item]}
+                        >
+                          <input
+                            type="radio"
+                            name="flowType"
+                            value={item}
+                            defaultChecked={flowType === item}
+                            className="peer sr-only"
+                          />
+                          <span className="flex items-center gap-2 rounded-full border border-linha px-3 py-1.5 text-xs text-suave transition-colors duration-300 peer-checked:border-texto peer-checked:text-texto hover:border-linha-forte">
+                            {FLOW_LABEL[item]}
+                          </span>
+                        </label>
+                      ))}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3">
@@ -170,37 +166,105 @@ export function LinhaTransacao({
                         Aplicar a
                         <input
                           name="pattern"
-                          defaultValue={sugerirPadrao(t.descriptionClean)}
+                          defaultValue=""
                           placeholder="só esta"
-                          aria-label="Padrão para próximas transações"
+                          aria-label="Padrão para próximos lançamentos deste tipo"
                           className="valor w-40 border-b border-linha bg-transparent px-1 py-1 text-xs text-texto outline-none transition-colors duration-300 focus:border-texto"
                         />
                       </label>
 
-                      <button className="rounded-full bg-texto px-4 py-1.5 text-xs text-fundo transition-opacity duration-300 hover:opacity-85">
-                        Salvar
+                      <button className="rounded-full border border-linha-forte px-4 py-1.5 text-xs text-suave transition-colors duration-300 hover:border-texto hover:text-texto">
+                        Corrigir tipo
                       </button>
                     </div>
 
                     <p className="text-xs text-fraco">
-                      Deixe o campo vazio para mudar só esta transação. Com um
-                      padrão, as próximas que combinarem entram já categorizadas —
-                      sem gastar chamada de IA.
+                      Muda como a linha entra nos totais. Com um padrão, os
+                      próximos imports já classificam assim — sem chamada de IA.
                     </p>
                   </form>
 
-                  <form action={alterarOptOut}>
-                    <input type="hidden" name="fingerprint" value={t.fingerprint} />
-                    <input type="hidden" name="optOut" value={String(!t.aiOptOut)} />
-                    <button className="text-xs text-fraco underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-suave">
-                      {t.aiOptOut
-                        ? 'Permitir IA na próxima categorização'
-                        : 'Impedir próximos envios à IA'}
-                    </button>
-                    <p className="mt-2 text-xs text-fraco">
-                      A escolha vale para os próximos envios e não desfaz chamadas já iniciadas.
+                  {flowType === 'transfer' ? (
+                    <p className="border-t border-linha pt-4 text-xs text-fraco">
+                      Como pagamento/transferência, fica visível mas não entra em
+                      gastos, receitas ou categorias.
                     </p>
-                  </form>
+                  ) : (
+                  <>
+                    <form
+                      action={corrigirCategoria}
+                      className="flex flex-col gap-3 border-t border-linha pt-4"
+                    >
+                      <input type="hidden" name="fingerprint" value={t.fingerprint} />
+
+                      <div className="flex flex-wrap gap-1.5">
+                        {(flowType === 'income'
+                          ? (['receita'] as const)
+                          : CATEGORIAS.filter((item) => item !== 'receita')).map(
+                          (item) => (
+                            <label
+                              key={item}
+                              className="cursor-pointer"
+                              title={CATEGORIA_LABEL[item]}
+                            >
+                              <input
+                                type="radio"
+                                name="category"
+                                value={item}
+                                defaultChecked={(t.category ?? 'outros') === item}
+                                className="peer sr-only"
+                              />
+                              <span className="flex items-center gap-2 rounded-full border border-linha px-3 py-1.5 text-xs text-suave transition-colors duration-300 peer-checked:border-texto peer-checked:text-texto hover:border-linha-forte">
+                                <span
+                                  aria-hidden
+                                  className="size-1.5 rounded-full"
+                                  style={{ background: CATEGORIA_COR[item] }}
+                                />
+                                {CATEGORIA_LABEL[item]}
+                              </span>
+                            </label>
+                          )
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="flex items-center gap-2 text-xs text-fraco">
+                          Aplicar a
+                          <input
+                            name="pattern"
+                            defaultValue={sugerirPadrao(t.descriptionClean)}
+                            placeholder="só esta"
+                            aria-label="Padrão para próximas transações"
+                            className="valor w-40 border-b border-linha bg-transparent px-1 py-1 text-xs text-texto outline-none transition-colors duration-300 focus:border-texto"
+                          />
+                        </label>
+
+                        <button className="rounded-full bg-texto px-4 py-1.5 text-xs text-fundo transition-opacity duration-300 hover:opacity-85">
+                          Salvar
+                        </button>
+                      </div>
+
+                      <p className="text-xs text-fraco">
+                        Deixe o campo vazio para mudar só esta transação. Com um
+                        padrão, as próximas que combinarem entram já categorizadas —
+                        sem gastar chamada de IA.
+                      </p>
+                    </form>
+
+                    <form action={alterarOptOut}>
+                      <input type="hidden" name="fingerprint" value={t.fingerprint} />
+                      <input type="hidden" name="optOut" value={String(!t.aiOptOut)} />
+                      <button className="text-xs text-fraco underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-suave">
+                        {t.aiOptOut
+                          ? 'Permitir IA na próxima categorização'
+                          : 'Impedir próximos envios à IA'}
+                      </button>
+                      <p className="mt-2 text-xs text-fraco">
+                        A escolha vale para os próximos envios e não desfaz chamadas já iniciadas.
+                      </p>
+                    </form>
+                  </>
+                  )}
                 </>
               )}
             </div>

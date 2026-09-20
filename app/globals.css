@@ -199,4 +199,39 @@
     font-feature-settings: "tnum" 1, "ss01" 1;
     letter-spacing: -0.01em;
   }
+
+  /* Controle de formulário: `select`, `input` e `textarea`.
+
+     Existe por um defeito que só aparece na máquina de quem usa: um `<select>`
+     sem `background-color` próprio é pintado pelo NAVEGADOR, não pela folha de
+     estilo — e o navegador usa branco. Como o `color` é herdado da página, o
+     texto vinha em `--texto` (quase branco) sobre esse branco, e a pessoa não
+     conseguia ler a opção que estava escolhendo.
+
+     `color-scheme: dark` no `:root` deveria bastar, e não basta: ele muda o
+     widget nativo, mas não sobrepõe a cor herdada em todos os motores. A
+     correção é declarar as duas coisas, sempre juntas — cor de fundo E cor de
+     texto —, inclusive nas `option`, que em Windows são pintadas pelo sistema
+     e não herdam o fundo do `select`. */
+  .campo {
+    background-color: var(--superficie);
+    color: var(--texto);
+    border: 1px solid var(--linha-forte);
+    border-radius: var(--radius);
+    transition: border-color 300ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .campo:hover {
+    border-color: var(--suave);
+  }
+
+  .campo:focus {
+    outline: none;
+    border-color: var(--texto);
+  }
+
+  .campo option {
+    background-color: var(--superficie);
+    color: var(--texto);
+  }
 }

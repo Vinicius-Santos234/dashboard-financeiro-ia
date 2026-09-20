@@ -2,6 +2,7 @@
   "name": "dashboard-financeiro",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -13,7 +14,8 @@
     "seed:usuarios": "tsx scripts/criar-usuarios-teste.mts",
     "migrar:demo": "tsx scripts/migrar-demo.ts",
     "repair:card-flows": "node --require ./scripts/tsx-windows-userinfo.cjs --conditions=react-server --import tsx scripts/repair-card-flows.ts",
-    "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.ts"
+    "seed:demo": "node --conditions=react-server --import tsx scripts/seed-demo.ts",
+    "migrar:faturas": "node --require ./scripts/tsx-windows-userinfo.cjs --conditions=react-server --import tsx scripts/migrar-faturas.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

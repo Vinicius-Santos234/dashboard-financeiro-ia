@@ -1,5 +1,13 @@
 import { CATEGORIAS, type Categoria } from '@/lib/domain/categories'
 import {
+  contagemPorTipoVazia,
+  origemDaContagem,
+  TIPOS_CONTA,
+  type ContagemPorTipo,
+  type Origem,
+  type TipoConta,
+} from '@/lib/domain/account'
+import {
   categoryAmountCents,
   resolvedFlowType,
   type FlowType,
@@ -48,6 +56,18 @@ export interface Rollup {
    * `bruto − estornos = líquido`, com a pizza somando exatamente o bruto.
    */
   refundByCategory: PorCategoria
+  /**
+   * Quantas transações do mês vieram de cada tipo de conta. Spec 003 §8 C2.
+   *
+   * É o que permite a tela obedecer à origem sem ler o mês inteiro: o rollup
+   * custa **uma** leitura de documento, e perguntar "esta fatura tem saldo?"
+   * varrendo as transações desfaria exatamente a economia que ele existe para
+   * dar.
+   *
+   * Ausente em rollup gravado antes desta versão; `lerRollup` normaliza, e a
+   * origem cai para a lista de contas quando a contagem está toda zerada.
+   */
+  byAccountKind: ContagemPorTipo
 }
 
 /** Todas as dez chaves em zero. Categoria ausente e categoria zerada precisam
@@ -66,6 +86,7 @@ export function rollupVazio(month: string): Rollup {
     count: 0,
     byCategory: porCategoriaVazio(),
     refundByCategory: porCategoriaVazio(),
+    byAccountKind: contagemPorTipoVazia(),
   }
 }
 
@@ -74,6 +95,8 @@ export interface LinhaAgregavel {
   amountCents: number
   category: Categoria | null
   flowType?: FlowType
+  /** Ausente em linha de rollup legado; conta como origem desconhecida. */
+  accountKind?: TipoConta
 }
 
 function somarLinha(
@@ -84,6 +107,7 @@ function somarLinha(
   const flowType = resolvedFlowType(linha)
 
   destino.count += 1
+  if (linha.accountKind) destino.byAccountKind[linha.accountKind] += 1
   if (flowType === 'income') destino.totalInCents += amount
   if (flowType === 'expense') destino.totalOutCents -= amount
   if (flowType === 'refund') destino.totalRefundCents += amount
@@ -138,6 +162,7 @@ export function deltaDeInsercao(linhas: readonly LinhaAgregavel[]): Omit<Rollup,
     count: 0,
     byCategory: porCategoriaVazio(),
     refundByCategory: porCategoriaVazio(),
+    byAccountKind: contagemPorTipoVazia(),
   }
 
   for (const linha of linhas) {
@@ -145,6 +170,60 @@ export function deltaDeInsercao(linhas: readonly LinhaAgregavel[]): Omit<Rollup,
   }
 
   return d
+}
+
+/** O delta com todos os sinais trocados. */
+function negar(d: Omit<Rollup, 'month'>): Omit<Rollup, 'month'> {
+  const byCategory = porCategoriaVazio()
+  const refundByCategory = porCategoriaVazio()
+  for (const c of CATEGORIAS) {
+    byCategory[c] = -(d.byCategory[c] ?? 0)
+    refundByCategory[c] = -(d.refundByCategory[c] ?? 0)
+  }
+  const byAccountKind = contagemPorTipoVazia()
+  for (const k of TIPOS_CONTA) byAccountKind[k] = -(d.byAccountKind[k] ?? 0)
+
+  return {
+    totalInCents: -d.totalInCents,
+    totalOutCents: -d.totalOutCents,
+    totalRefundCents: -d.totalRefundCents,
+    totalTransferCents: -d.totalTransferCents,
+    count: -d.count,
+    byCategory,
+    refundByCategory,
+    byAccountKind,
+  }
+}
+
+function somarDeltas(
+  a: Omit<Rollup, 'month'>,
+  b: Omit<Rollup, 'month'>
+): Omit<Rollup, 'month'> {
+  // `aplicarDelta` já sabe somar campo a campo; o `month` sintético só existe
+  // para satisfazer o tipo e é descartado.
+  const soma = aplicarDelta({ month: '', ...a }, b)
+  return soma
+}
+
+/**
+ * O delta de trocar o fluxo de uma linha. Spec 003 §8 C5.
+ *
+ * Mover uma transação entre `expense`, `refund` e `transfer` mexe em **três
+ * totais diferentes** e ainda troca de mapa por categoria — o estorno vive em
+ * `refundByCategory`, a despesa em `byCategory`, e a transferência em nenhum
+ * dos dois. Escrever esse delta à mão seria seis oportunidades de errar um
+ * sinal.
+ *
+ * Em vez disso, a linha é agregada duas vezes, como se estivesse entrando: uma
+ * do jeito antigo, outra do novo. A diferença entre as duas é, por
+ * construção, exatamente o que precisa mudar no agregado — e `count` se anula
+ * sozinho, porque a transação não deixou de existir.
+ */
+export function deltaDeMudancaDeFluxo(
+  antes: LinhaAgregavel,
+  depois: LinhaAgregavel
+): Omit<Rollup, 'month'> {
+  return somarDeltas(deltaDeInsercao([depois]), negar(deltaDeInsercao([antes])))
 }
 
 /**
@@ -201,6 +280,9 @@ export function deltaSoDeCategoria(d: DeltaDeCategoria): Omit<Rollup, 'month'> {
     count: 0,
     byCategory: { ...porCategoriaVazio(), ...d.byCategory },
     refundByCategory: { ...porCategoriaVazio(), ...d.refundByCategory },
+    // Recategorizar não move transação entre contas: a origem do mês é a
+    // mesma antes e depois.
+    byAccountKind: contagemPorTipoVazia(),
   }
 }
 
@@ -211,6 +293,12 @@ export function aplicarDelta(base: Rollup, delta: Omit<Rollup, 'month'>): Rollup
     byCategory[c] = (base.byCategory[c] ?? 0) + (delta.byCategory[c] ?? 0)
     refundByCategory[c] =
       (base.refundByCategory?.[c] ?? 0) + (delta.refundByCategory?.[c] ?? 0)
+  }
+
+  const byAccountKind = contagemPorTipoVazia()
+  for (const k of TIPOS_CONTA) {
+    byAccountKind[k] =
+      (base.byAccountKind?.[k] ?? 0) + (delta.byAccountKind?.[k] ?? 0)
   }
 
   return {
@@ -224,6 +312,7 @@ export function aplicarDelta(base: Rollup, delta: Omit<Rollup, 'month'>): Rollup
     count: base.count + delta.count,
     byCategory,
     refundByCategory,
+    byAccountKind,
   }
 }
 
@@ -268,8 +357,44 @@ export function divergencias(guardado: Rollup, real: Rollup): string[] {
     const v = real.byCategory[c] ?? 0
     if (g !== v) problemas.push(`${c}: guardado ${g}, real ${v}`)
   }
+  for (const k of TIPOS_CONTA) {
+    const g = guardado.byAccountKind?.[k] ?? 0
+    const v = real.byAccountKind?.[k] ?? 0
+    if (g !== v) problemas.push(`byAccountKind.${k}: guardado ${g}, real ${v}`)
+  }
 
   return problemas
+}
+
+/**
+ * A origem do mês, lida do rollup. Spec 003 §5 D3.
+ *
+ * Devolve `null` quando o rollup não sabe — mês vazio, ou agregado gravado
+ * antes desta versão. Quem chama resolve a ausência com a lista de contas
+ * (`origemDasContas`); confundir "não sei" com "é fatura" faria a tela sumir
+ * com o saldo de quem só tem conta corrente e ainda não reimportou nada.
+ */
+export function origemDoRollup(rollup: Rollup): Origem | null {
+  const contagem = rollup.byAccountKind ?? contagemPorTipoVazia()
+  const somados = TIPOS_CONTA.reduce((total, k) => total + (contagem[k] ?? 0), 0)
+
+  /**
+   * A contagem só decide quando **cobre o período inteiro**.
+   *
+   * Rollup anterior à C2 nasce com a contagem zerada, e o delta de uma
+   * importação nova soma **só as linhas novas**. Um período com receita de
+   * conta corrente legada e uma compra de cartão recém-importada fica com
+   * `count = 2` e `byAccountKind = { credit_card: 1 }` — a conta corrente
+   * existe e não está contada.
+   *
+   * Decidir por essa contagem parcial devolveria `fatura`, e a tela sumiria
+   * com a receita e o saldo de dinheiro que está lá. Devolver `null` manda a
+   * decisão para a lista de contas, que é conservadora: quem tem conta
+   * corrente continua vendo os números de conta.
+   */
+  if (somados < rollup.count) return null
+
+  return origemDaContagem(contagem)
 }
 
 /**

@@ -16,7 +16,7 @@ const b = { ...a, amountCents: -2000, description: 'COMPRA B' }
 
 async function importar(linhas = [a], importId = 'original') {
   return gravarTransacoes(uid, atribuirFingerprints(accountId, linhas), {
-    accountId, importId, source: 'ofx', descriptionClean: (t) => t.description,
+    accountId, accountKind: 'checking', importId, source: 'ofx', descriptionClean: (t) => t.description,
   })
 }
 

@@ -1,6 +1,6 @@
 # Spec 003 — O app vira um controlador de fatura de cartão
 
-**Status:** aprovada, não iniciada
+**Status:** implementada — C1 a C8 concluídas em 2026-09-19
 **Data:** 2026-09-07
 **Emenda:** `specs/001-v1.md` (concluída) e `specs/002-open-finance.md` (aprovada, não iniciada)
 **Origem:** sessão de decisões arquiteturais de 07/09, sem código
@@ -152,62 +152,62 @@ Ordem escolhida por custo crescente e por dependência real. C1 é a decisão vi
 texto; C8 é a única que mexe na chave do rollup.
 
 ### C1 — A proposta, escrita
-- [ ] README, landing, tela vazia e `scripts/seed-demo.ts` falando de **fatura de cartão**
-- [ ] O aviso da §7.2 da 001 (risco residual do nome de estabelecimento) reescrito para
+- [x] README, landing, tela vazia e `scripts/seed-demo.ts` falando de **fatura de cartão**
+- [x] O aviso da §7.2 da 001 (risco residual do nome de estabelecimento) reescrito para
       o contexto novo, onde o estabelecimento é **o dado central** e não um efeito colateral
 - **Aceite:** ninguém que abre o link precisa perguntar de que o app trata. Nenhuma
   superfície pública ainda diz "extrato bancário" como caso principal.
 
 ### C2 — Cartão não tem saldo
-- [ ] A origem (`credit_card` / `bank_account`) chega ao dashboard e à lista
-- [ ] Origem fatura: **sem saldo e sem recebido**; total da fatura, estornos, líquido e a pizza
-- [ ] Origem conta: os cinco números de hoje, inalterados
+- [x] A origem (`credit_card` / `bank_account`) chega ao dashboard e à lista
+- [x] Origem fatura: **sem saldo e sem recebido**; total da fatura, estornos, líquido e a pizza
+- [x] Origem conta: os cinco números de hoje, inalterados
 - **Aceite:** importar a fatura real de 06/09 e **não existir na tela nenhum número
   negativo apresentado como saldo**. Importar o extrato de conta do mesmo dia e a tela
   continuar idêntica à de hoje.
 
 ### C3 — Renda mensal digitada (D4)
-- [ ] Campo em `/conta`, gravado por Server Action, em **centavos** (001 §3)
-- [ ] Dashboard mostra *"a fatura consumiu X% da sua renda"* quando houver valor
-- [ ] Sem valor: **nenhum percentual na tela**, e nada quebrado
+- [x] Campo em `/conta`, gravado por Server Action, em **centavos** (001 §3)
+- [x] Dashboard mostra *"a fatura consumiu X% da sua renda"* quando houver valor
+- [x] Sem valor: **nenhum percentual na tela**, e nada quebrado
 - **Aceite:** três estados verificados — sem renda (nada aparece), com renda (percentual
   bate ao centavo com `gastoLiquido / rendaMensalCents`), e renda apagada (volta ao
   primeiro estado sem deixar resíduo).
 
 ### C4 — Tela de regras
-- [ ] `/regras` lista as regras com padrão, categoria e `hits`
-- [ ] Editar categoria e **apagar** regra
-- [ ] Regra apagada não é reaplicada no import seguinte
+- [x] `/regras` lista as regras com padrão, categoria e `hits`
+- [x] Editar categoria e **apagar** regra
+- [x] Regra apagada não é reaplicada no import seguinte
 - **Aceite:** criar uma regra errada corrigindo uma transação, apagá-la, reimportar o
   mesmo arquivo e a transação **não** voltar categorizada errado. Hoje isso é impossível,
   e é o defeito que esta etapa existe para fechar: **o app aprende e a pessoa não vê o
   que ele aprendeu.**
 
 ### C5 — `flowType` corrigível na linha (D5)
-- [ ] O painel que já abre na linha ganha a correção de fluxo
-- [ ] A correção **vira regra**, como a de categoria
-- [ ] O rollup é ajustado na **mesma transação** (001 §4.5) — mover linha entre `expense`,
+- [x] O painel que já abre na linha ganha a correção de fluxo
+- [x] A correção **vira regra**, como a de categoria
+- [x] O rollup é ajustado na **mesma transação** (001 §4.5) — mover linha entre `expense`,
       `refund` e `transfer` mexe em três totais diferentes
 - **Aceite:** reclassificar uma linha e as três leituras continuarem fechando
   (`bruto − estornos = líquido`), conferido campo a campo contra `recalcularRollup()`.
 
 ### C6 — `contaPadrao` honesto
-- [ ] `kind` **não** é mais sobrescrito a cada import pelo `merge`
-- [ ] CSV sem id de conta não joga fatura e conta corrente no mesmo `accountId`
+- [x] `kind` **não** é mais sobrescrito a cada import pelo `merge`
+- [x] CSV sem id de conta não joga fatura e conta corrente no mesmo `accountId`
 - **Aceite:** importar uma fatura e um extrato de conta, ambos CSV e ambos sem id de
   conta, e existirem **duas** contas com `kind` correto e estável. Hoje existe uma só,
   cujo tipo é o do último import.
 
 ### C7 — Tendência de N meses (D7)
-- [ ] Leitura de N rollups sob demanda, **sem** documento agregado novo
-- [ ] A tela mostra a série por categoria
+- [x] Leitura de N rollups sob demanda, **sem** documento agregado novo
+- [x] A tela mostra a série por categoria
 - **Aceite:** a série de 6 meses bate campo a campo com a soma dos seis rollups lidos
   individualmente, e **nenhuma coleção nova foi criada**.
 
 ### C8 — A fatura como unidade de período (D2)
-- [ ] Data de fechamento e vencimento no modelo de conta de cartão
-- [ ] A chave do rollup deixa de ser o mês civil para origem fatura
-- [ ] Migração dos dados existentes, com backup antes e recálculo conferido depois
+- [x] Data de fechamento e vencimento no modelo de conta de cartão
+- [x] A chave do rollup deixa de ser o mês civil para origem fatura
+- [x] Migração dos dados existentes, com backup antes e recálculo conferido depois
 - **Aceite:** uma compra de 28/09 numa fatura que fecha em 03/10 aparece **na fatura de
   outubro**, e a soma das faturas de um ano bate com a soma das transações do ano.
 - **Depende de:** C2, C6 e C7 concluídas. É a etapa que pode corromper dado histórico,
@@ -241,14 +241,42 @@ Herdadas da 001 §9, com uma nova e uma mais exigente:
 
 ---
 
-## 11. Pendências
+## 11. Pendências — resolvidas na implementação
 
-- [ ] Decidir se a renda digitada é **líquida ou bruta**, e dizer isso no campo — a
-      pessoa não deve ter que adivinhar qual das duas o percentual usa
-- [ ] Definir o texto do aviso de C1 sobre o risco residual, agora que o nome do
-      estabelecimento é o dado central e não um efeito colateral
-- [ ] Confirmar se alguma fatura brasileira exportada traz data de fechamento no
-      arquivo, ou se ela terá de ser informada pela pessoa em C8
+- [x] **Renda líquida ou bruta:** **líquida**, e o campo diz isso com estas palavras
+      (*"o que cai na conta, já descontados imposto e INSS"*). O motivo é prático: a
+      pessoa compara a fatura com o dinheiro que de fato tem para pagá-la, não com o
+      salário do contracheque.
+- [x] **Texto do aviso de C1:** escrito em `/conta` e no README, sob o título *"o
+      estabelecimento é o dado central, e não um efeito colateral"*. A mudança de
+      enquadramento é a informação: antes o nome **sobrava** no payload, agora ele é a
+      razão de a fatura funcionar. O risco não diminuiu — passou para o centro, e as
+      categorias sensíveis são nomeadas (saúde, jurídico, religião), com a LGPD art. 5º,
+      II citada.
+- [x] **Data de fechamento no arquivo:** **sim para OFX, não para CSV.** O OFX de cartão
+      declara `DTEND`, que num extrato de fatura é o fechamento. Entra como
+      **sugestão**, nunca como fato: alguns exportadores põem ali a data de geração do
+      arquivo. Ela só preenche uma conta que ainda não tem fechamento, nunca sobrescreve
+      o que a pessoa digitou, e a tela diz de onde o valor veio.
+
+---
+
+## 13. Desvios da implementação
+
+Um só, e é deliberado.
+
+**C8 ficou opt-in por conta.** A spec dizia *"a chave do rollup deixa de ser o mês civil
+para origem fatura"*, sem qualificar. Implementado assim, todo cartão já gravado mudaria
+de chave na primeira importação seguinte — uma migração silenciosa da única operação que
+a própria spec chama de *"a que pode corromper dado histórico"* (§10).
+
+O que vale: **sem dia de fechamento configurado, o período continua sendo o mês civil.**
+A mudança acontece quando a pessoa configura o fechamento em `/conta` (ou aceita a
+sugestão do OFX), e o histórico só se move com `npm run migrar:faturas`, que faz backup,
+recalcula os períodos de origem **e** de destino, e relê do banco para conferir campo a
+campo antes de dizer que terminou.
+
+Isto atende ao aceite da C8 sem transformar um deploy em migração.
 
 ---
 

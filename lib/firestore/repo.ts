@@ -4,10 +4,21 @@ import { FieldValue } from 'firebase-admin/firestore'
 import { adminDb } from '@/lib/firebase/admin'
 import type { Categoria } from '@/lib/domain/categories'
 import {
+  contagemPorTipoVazia,
+  origemDasContas,
+  type Origem,
+  type TipoConta,
+} from '@/lib/domain/account'
+import {
+  categoriaAposFluxo,
   resolvedFlowType,
   type FlowType,
   type StatementProfile,
 } from '@/lib/domain/financial-flow'
+import {
+  diaDeFechamentoValido,
+  periodoDaFatura,
+} from '@/lib/domain/invoice'
 import { normalizarPadrao, type RegraCategoria } from '@/lib/domain/rules'
 import type { InsightBody } from '@/lib/llm/schema'
 import type { TransacaoCategorizavel } from '@/lib/llm/categorize'
@@ -23,8 +34,9 @@ import {
   calcularRollup,
   deltaDeInsercao,
   deltaDeRecategorizacao,
+  deltaDeMudancaDeFluxo,
   deltaSoDeCategoria,
-  mesDe,
+  origemDoRollup,
   porCategoriaVazio,
   rollupVazio,
   type LinhaAgregavel,
@@ -42,6 +54,19 @@ import {
 
 export interface TransactionDoc {
   accountId: string
+  /**
+   * O tipo da conta de origem, copiado no momento da gravação. Spec 003 §8 C2.
+   *
+   * Denormalizado de propósito: `recalcularRollup` precisa da origem de cada
+   * linha, e fazer o join com `accounts` a cada recálculo seria uma leitura
+   * por conta dentro da transação que já é a mais cara do app. É seguro
+   * porque, desde a C6, o `kind` é escrito uma única vez, na criação da conta,
+   * e nunca mais muda.
+   *
+   * Ausente em documentos gravados antes desta versão; quem lê resolve pelo
+   * `accountId`.
+   */
+  accountKind?: TipoConta
   importId: string | null
   occurredOn: string
   month: string
@@ -67,7 +92,105 @@ export async function garantirUsuario(uid: string, email: string | null) {
   )
 }
 
-export type TipoConta = 'checking' | 'savings' | 'credit_card'
+/**
+ * O perfil da pessoa. Spec 003 §7.
+ *
+ * `rendaAtualizadaEm` sai como **string ISO**, e não como `Timestamp`: a
+ * classe do Firestore não atravessa a fronteira Server → Client Component, e
+ * espalhar o documento cru é o erro que `paraTransacao` documenta logo abaixo.
+ */
+export interface PerfilUsuario {
+  email: string | null
+  /** `null` = a pessoa não informou. Não é o mesmo que zero (003 §7). */
+  rendaMensalCents: number | null
+  rendaAtualizadaEm: string | null
+  /**
+   * Fechamento e vencimento declarados **antes de existir cartão nenhum**.
+   *
+   * O dia de fechamento é propriedade do cartão, e o lugar natural dele é a
+   * conta — mas a conta só nasce na primeira importação, e é exatamente essa
+   * importação que precisa dele. Sem isto, a ordem obrigatória era: importar
+   * torto, descobrir, configurar, migrar.
+   *
+   * Aqui é o que a pessoa sabe sobre o cartão dela antes de o app conhecer o
+   * cartão. Quando a conta nasce, ela herda estes valores; depois disso quem
+   * manda é a conta, e este campo deixa de ser consultado.
+   */
+  fechamentoPadraoCartao: number | null
+  vencimentoPadraoCartao: number | null
+}
+
+export async function lerPerfil(uid: string): Promise<PerfilUsuario> {
+  const snap = await adminDb().doc(p.usuario(uid)).get()
+  const dados = snap.data() as
+    | {
+        email?: string | null
+        rendaMensalCents?: number | null
+        rendaAtualizadaEm?: { toDate(): Date } | null
+        fechamentoPadraoCartao?: number | null
+        vencimentoPadraoCartao?: number | null
+      }
+    | undefined
+
+  return {
+    email: dados?.email ?? null,
+    rendaMensalCents:
+      typeof dados?.rendaMensalCents === 'number' ? dados.rendaMensalCents : null,
+    rendaAtualizadaEm: dados?.rendaAtualizadaEm?.toDate().toISOString() ?? null,
+    fechamentoPadraoCartao: diaDeFechamentoValido(dados?.fechamentoPadraoCartao)
+      ? dados.fechamentoPadraoCartao
+      : null,
+    vencimentoPadraoCartao:
+      typeof dados?.vencimentoPadraoCartao === 'number'
+        ? dados.vencimentoPadraoCartao
+        : null,
+  }
+}
+
+/**
+ * Guarda o fechamento que a pessoa declarou antes de ter cartão cadastrado.
+ *
+ * Não toca em conta nenhuma: quem já tem fechamento próprio continua com o
+ * dele. Isto só existe para a **primeira** importação nascer certa.
+ */
+export async function definirFechamentoPadrao(
+  uid: string,
+  closingDay: number | null,
+  dueDay: number | null
+): Promise<void> {
+  await adminDb()
+    .doc(p.usuario(uid))
+    .set(
+      { fechamentoPadraoCartao: closingDay, vencimentoPadraoCartao: dueDay },
+      { merge: true }
+    )
+}
+
+/**
+ * Grava a renda mensal, ou a apaga quando vem `null`.
+ *
+ * Apagar precisa escrever `null` de verdade, e não omitir o campo: com
+ * `merge`, omitir deixaria o valor anterior no documento, e o critério de
+ * aceite da C3 pede que a renda apagada volte ao primeiro estado **sem deixar
+ * resíduo**.
+ */
+export async function definirRendaMensal(
+  uid: string,
+  rendaMensalCents: number | null
+): Promise<void> {
+  await adminDb()
+    .doc(p.usuario(uid))
+    .set(
+      {
+        rendaMensalCents,
+        rendaAtualizadaEm:
+          rendaMensalCents === null ? null : FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    )
+}
+
+export type { TipoConta }
 
 export async function criarConta(
   uid: string,
@@ -83,9 +206,99 @@ export async function criarConta(
   return ref.id
 }
 
-export async function listarContas(uid: string) {
+export interface ContaLida {
+  id: string
+  name: string
+  institution: string | null
+  kind: TipoConta
+  /**
+   * Dia do fechamento da fatura. Spec 003 §8 C8.
+   *
+   * `null` = não configurado, e então o período continua sendo o mês civil.
+   * Esta etapa é **opt-in por conta** de propósito: mudar a chave do rollup é
+   * a única operação do app que pode corromper histórico, e não faz sentido
+   * fazê-la em conta nenhuma sem alguém pedir.
+   */
+  closingDay: number | null
+  /** Dia do vencimento, só para a tela dizer. Não entra em cálculo nenhum. */
+  dueDay: number | null
+  /**
+   * De onde veio o fechamento — e `'pessoa'` **também quando ela apagou**.
+   *
+   * `null` significa exatamente *"ninguém nunca decidiu"*, e é a única
+   * situação em que o import pode preencher sozinho. Sem essa distinção,
+   * apagar o fechamento era indistinguível de nunca tê-lo configurado, e a
+   * importação seguinte o repunha a partir do perfil ou do `DTEND` — desfazendo
+   * em silêncio uma escolha explícita.
+   */
+  closingDayFonte: 'arquivo' | 'pessoa' | null
+}
+
+function paraConta(d: FirebaseFirestore.DocumentSnapshot): ContaLida {
+  const dados = d.data() as Partial<ContaLida>
+  return {
+    id: d.id,
+    name: dados.name ?? 'Conta',
+    institution: dados.institution ?? null,
+    // Conta gravada sem tipo é tratada como conta corrente: é o que ela era
+    // antes de o campo existir, e supor cartão faria a tela esconder o saldo
+    // de quem sempre teve um.
+    kind: dados.kind ?? 'checking',
+    closingDay: diaDeFechamentoValido(dados.closingDay) ? dados.closingDay : null,
+    dueDay: typeof dados.dueDay === 'number' ? dados.dueDay : null,
+    closingDayFonte: dados.closingDayFonte ?? null,
+  }
+}
+
+export async function listarContas(uid: string): Promise<ContaLida[]> {
   const snap = await adminDb().collection(p.contas(uid)).get()
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  return snap.docs.map(paraConta)
+}
+
+export async function obterConta(
+  uid: string,
+  accountId: string
+): Promise<ContaLida | null> {
+  const snap = await adminDb().doc(p.conta(uid, accountId)).get()
+  return snap.exists ? paraConta(snap) : null
+}
+
+/**
+ * Configura a fatura de um cartão. Spec 003 §8 C8.
+ *
+ * **Não remexe no histórico.** Trocar o fechamento muda o período das compras
+ * dos próximos imports; as que já estão gravadas continuam onde estão até
+ * alguém rodar `npm run migrar:faturas`, que faz backup antes e confere o
+ * recálculo depois. Mudar a chave de dado histórico em silêncio, a partir de
+ * um campo de formulário, é exatamente o risco que a spec manda evitar.
+ */
+export async function configurarFatura(
+  uid: string,
+  accountId: string,
+  dados: {
+    closingDay: number | null
+    dueDay: number | null
+    fonte: 'arquivo' | 'pessoa'
+  }
+): Promise<void> {
+  const ref = adminDb().doc(p.conta(uid, accountId))
+  const snap = await ref.get()
+  if (!snap.exists) throw new Error('Conta não encontrada.')
+  if (paraConta(snap).kind !== 'credit_card') {
+    throw new Error('Só conta de cartão tem fatura.')
+  }
+
+  await ref.set(
+    {
+      closingDay: dados.closingDay,
+      dueDay: dados.dueDay,
+      // A fonte é gravada mesmo quando o dia é apagado: apagar é uma decisão,
+      // e `null` aqui passaria a significar "nunca decidiram" — devolvendo a
+      // conta para o preenchimento automático no import seguinte.
+      closingDayFonte: dados.fonte,
+    },
+    { merge: true }
+  )
 }
 
 /**
@@ -207,31 +420,95 @@ export async function listarImports(uid: string) {
  *
  * Com id determinístico, a segunda chamada simplesmente encontra o documento
  * que a primeira criou — não há janela entre "não existe" e "criei".
+ *
+ * **A separação por tipo vem do NOME, e não de hashear o `kind`** (003 §8 C6).
+ * É a diferença entre uma mudança cirúrgica e uma migração: o `accountId`
+ * entra no fingerprint, então misturar o tipo no hash daria id novo para todo
+ * cartão já gravado — inclusive os que sempre estiveram certos — e o extrato
+ * inteiro entraria duplicado no import seguinte. Quem chama nomeia a conta de
+ * cartão de `Cartão principal` e a de conta corrente de `Conta principal`, e
+ * isso basta para as duas pararem de dividir documento.
  */
+function idPorNome(name: string): string {
+  return (
+    'acc_' +
+    createHash('sha256')
+      .update(normalizeDescription(name), 'utf8')
+      .digest('hex')
+      .slice(0, 24)
+  )
+}
+
+/**
+ * O nome que o CSV de cartão usava antes de a C6 separar fatura de conta.
+ *
+ * Quem importou fatura em CSV antes daquela mudança tem os lançamentos sob o
+ * id derivado deste nome. Ver `contaPadrao`.
+ */
+const NOME_LEGADO_SEM_ID = 'Conta principal'
+
 export async function contaPadrao(
   uid: string,
   sugestao: { name: string; institution?: string | null; kind: TipoConta }
 ): Promise<string> {
-  const id =
-    'acc_' +
-    createHash('sha256')
-      .update(normalizeDescription(sugestao.name), 'utf8')
-      .digest('hex')
-      .slice(0, 24)
+  let id = idPorNome(sugestao.name)
+
+  /**
+   * A herança da conta legada, e por que ela existe. Spec 003 §8 C6.
+   *
+   * A C6 renomeou a conta padrão do CSV de cartão de `Conta principal` para
+   * `Cartão principal`, para fatura e conta pararem de dividir documento. O
+   * nome entra no hash do id, o id entra no **fingerprint** (001 §4.3), e o
+   * fingerprint é a identidade da transação — então, para quem já tinha
+   * importado, reimportar o mesmo arquivo gravaria tudo de novo sob
+   * identidades novas. Uma revisão externa reproduziu: `gravadas: 1,
+   * jaExistiam: 0` numa compra que já estava lá, dobrando o gasto.
+   *
+   * A herança fecha isso sem desfazer a C6: se o documento legado existe **e
+   * é de cartão**, ele continua sendo o cartão daquela pessoa. Cada caso:
+   *
+   *   - conta nova → id novo, nada a herdar;
+   *   - quem importou fatura CSV antes → herda, e nada duplica;
+   *   - quem tem conta corrente em `Conta principal` → o `kind` é `checking`,
+   *     não herda, e o cartão nasce separado como a C6 quer.
+   */
+  if (sugestao.kind === 'credit_card' && sugestao.name !== NOME_LEGADO_SEM_ID) {
+    const legadoId = idPorNome(NOME_LEGADO_SEM_ID)
+    const legado = await adminDb().doc(p.conta(uid, legadoId)).get()
+    if (legado.exists && (legado.data()?.kind as TipoConta) === 'credit_card') {
+      id = legadoId
+    }
+  }
 
   const ref = adminDb().doc(p.conta(uid, id))
 
-  await ref.set(
-    {
-      name: sugestao.name,
-      institution: sugestao.institution ?? null,
-      kind: sugestao.kind,
-      createdAt: FieldValue.serverTimestamp(),
-    },
-    // `merge` para não sobrescrever `createdAt` de uma conta já existente nem
-    // apagar campos que uma versão futura venha a acrescentar.
-    { merge: true }
-  )
+  await adminDb().runTransaction(async (tx) => {
+    const atual = await tx.get(ref)
+
+    // O `kind` só é escrito na CRIAÇÃO — esta é a outra metade da C6.
+    //
+    // Escrevê-lo a cada import era o defeito: bastava importar uma fatura para
+    // a conta corrente da pessoa virar `credit_card` no documento, e com ela
+    // toda a leitura da tela. Uma conta cujo tipo muda sozinha não serve para
+    // decidir se a tela mostra saldo, que é justamente o que a C2 precisa
+    // dela.
+    //
+    // Com a omissão, o tipo passa a ser **estável**: ele é o que era quando a
+    // conta nasceu, e nenhum arquivo importado depois o reescreve.
+    tx.set(
+      ref,
+      {
+        name: sugestao.name,
+        institution: sugestao.institution ?? null,
+        ...(atual.exists
+          ? {}
+          : { kind: sugestao.kind, createdAt: FieldValue.serverTimestamp() }),
+      },
+      // `merge` para não sobrescrever `createdAt` de uma conta já existente nem
+      // apagar campos que uma versão futura venha a acrescentar.
+      { merge: true }
+    )
+  })
 
   return id
 }
@@ -243,6 +520,15 @@ export interface ResultadoGravacao {
 
 export interface OpcoesGravacao {
   accountId: string
+  /** Tipo da conta de origem; vai para o documento e para o rollup (003 C2). */
+  accountKind: TipoConta
+  /**
+   * Dia do fechamento da fatura, quando a conta tem um. Spec 003 §8 C8.
+   *
+   * Com ele, o período (`month`) deixa de ser o mês civil e passa a ser o mês
+   * em que a fatura fecha. Sem ele — `null` ou ausente —, nada muda.
+   */
+  closingDay?: number | null
   importId: string
   source: TransactionDoc['source']
   /** Descrição anonimizada (§7.1). */
@@ -277,11 +563,19 @@ export async function gravarTransacoes(
 
   const col = adminDb().collection(p.transacoes(uid))
 
+  // O período: mês civil para conta, mês de fechamento da fatura para cartão
+  // configurado (003 C8). Um só lugar decide, e é o mesmo que agrupa os lotes
+  // logo abaixo — sem isso, o documento diria um mês e o rollup atualizaria
+  // outro.
+  const periodo = (occurredOn: string) =>
+    periodoDaFatura(occurredOn, opcoes.closingDay ?? null)
+
   const montar = (t: ComFingerprint): TransactionDoc => ({
     accountId: opcoes.accountId,
+    accountKind: opcoes.accountKind,
     importId: opcoes.importId,
     occurredOn: t.occurredOn,
-    month: mesDe(t.occurredOn),
+    month: periodo(t.occurredOn),
     amountCents: t.amountCents,
     flowType: resolvedFlowType(t),
     descriptionRaw: t.description,
@@ -308,7 +602,7 @@ export async function gravarTransacoes(
 
   const porMes = new Map<string, ComFingerprint[]>()
   for (const t of transacoes) {
-    const mes = mesDe(t.occurredOn)
+    const mes = periodo(t.occurredOn)
     const lista = porMes.get(mes) ?? []
     lista.push(t)
     porMes.set(mes, lista)
@@ -443,6 +737,69 @@ export async function recategorizar(
   })
 }
 
+/**
+ * Muda o fluxo de uma transação e ajusta o rollup na MESMA transação.
+ * Spec 003 §8 C5.
+ *
+ * Mover uma linha entre `expense`, `refund` e `transfer` mexe em três totais
+ * diferentes (§8 C5), e o critério de aceite pede que as três leituras
+ * continuem fechando — `bruto − estornos = líquido` — conferidas campo a
+ * campo contra `recalcularRollup()`. Por isso o delta não é escrito à mão:
+ * `deltaDeMudancaDeFluxo` agrega a linha duas vezes e devolve a diferença.
+ */
+export async function corrigirFluxo(
+  uid: string,
+  fingerprint: string,
+  para: FlowType
+): Promise<void> {
+  const txRef = adminDb().doc(p.transacao(uid, fingerprint))
+
+  await adminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(txRef)
+    if (!snap.exists) throw new Error('Transação não encontrada.')
+
+    const dados = snap.data() as TransactionDoc
+    const de = resolvedFlowType(dados)
+
+    const categoriaDepois = categoriaAposFluxo(
+      de,
+      para,
+      dados.category,
+      dados.categorySource
+    )
+    if (de === para && categoriaDepois === dados.category) return
+
+    const rollupRef = adminDb().doc(p.rollup(uid, dados.month))
+    const rollupSnap = await tx.get(rollupRef)
+    const base = rollupSnap.exists
+      ? (rollupSnap.data() as Rollup)
+      : rollupVazio(dados.month)
+
+    const comum = {
+      month: dados.month,
+      amountCents: dados.amountCents,
+      accountKind: dados.accountKind,
+    }
+    const novo = aplicarDelta(
+      base,
+      deltaDeMudancaDeFluxo(
+        { ...comum, category: dados.category, flowType: de },
+        { ...comum, category: categoriaDepois, flowType: para }
+      )
+    )
+
+    tx.update(txRef, {
+      flowType: para,
+      category: categoriaDepois,
+      // A escolha é da pessoa, e é ela que a próxima categorização respeita.
+      categorySource: categoriaDepois === null ? null : 'user',
+      confidence: null,
+      categoryRevision: (dados.categoryRevision ?? 0) + 1,
+    })
+    tx.set(rollupRef, { ...novo, updatedAt: FieldValue.serverTimestamp() })
+  })
+}
+
 export interface AtualizacaoCategoria {
   fingerprint: string
   month: string
@@ -544,9 +901,60 @@ export async function obterTransacao(uid: string, fingerprint: string) {
     : null
 }
 
-export async function listarRegras(uid: string): Promise<RegraCategoria[]> {
+/**
+ * A regra com o id do documento, para a tela poder editá-la e apagá-la (C4).
+ *
+ * `createdAt` fica de fora: é `Timestamp`, e a lista atravessa para um Client
+ * Component.
+ */
+export interface RegraLida extends RegraCategoria {
+  id: string
+}
+
+export async function listarRegras(uid: string): Promise<RegraLida[]> {
   const snap = await adminDb().collection(p.regras(uid)).get()
-  return snap.docs.map((d) => d.data() as RegraCategoria)
+  return snap.docs.map((d) => {
+    const dados = d.data() as RegraCategoria
+    return {
+      id: d.id,
+      // `?? ''` porque documento incompleto já pode existir no banco: versões
+      // anteriores recriavam uma regra apagada como `{ hits: 1 }`, sem padrão.
+      // Deixar `undefined` vazar fazia `pattern.localeCompare` derrubar a tela
+      // inteira no desempate por `hits`.
+      pattern: dados.pattern ?? '',
+      category: dados.category ?? null,
+      hits: dados.hits ?? 0,
+      ...(dados.flowType ? { flowType: dados.flowType } : {}),
+    }
+  })
+}
+
+/**
+ * Apaga uma regra pelo id do documento. Spec 003 §8 C4.
+ *
+ * **Uma por vez, sem ação em lote** (003 §10): apagar regras em massa por
+ * engano desfaria meses de correção manual, e não existe desfazer.
+ *
+ * Apagar a regra não recategoriza nada do que já está gravado — o que ela
+ * decidiu no passado é dado, não palpite. O que ela deixa de fazer é ser
+ * reaplicada no próximo import, que é o defeito que a C4 existe para fechar.
+ */
+export async function apagarRegra(uid: string, regraId: string): Promise<void> {
+  await adminDb().doc(p.regra(uid, regraId)).delete()
+}
+
+/** Troca a categoria de uma regra existente, preservando `hits` e o padrão. */
+export async function atualizarCategoriaDaRegra(
+  uid: string,
+  regraId: string,
+  category: Categoria
+): Promise<void> {
+  const ref = adminDb().doc(p.regra(uid, regraId))
+  await adminDb().runTransaction(async (tx) => {
+    const atual = await tx.get(ref)
+    if (!atual.exists) throw new Error('Regra não encontrada.')
+    tx.update(ref, { category })
+  })
 }
 
 /**
@@ -570,7 +978,9 @@ function idDaRegra(padraoNormalizado: string): string {
 export async function salvarRegra(
   uid: string,
   pattern: string,
-  category: Categoria
+  /** `null` cria uma regra **só de fluxo**, que não categoriza nada. */
+  category: Categoria | null,
+  flowType?: FlowType
 ): Promise<string> {
   const normalizado = normalizarPadrao(pattern)
   if (normalizado.length < 3) throw new Error('O padrão precisa ter ao menos 3 caracteres.')
@@ -584,6 +994,10 @@ export async function salvarRegra(
         pattern: normalizado,
         category,
         hits: atual.exists ? ((atual.data()?.hits as number | undefined) ?? 0) : 0,
+        // Omitir não apaga, com `merge`. Uma correção só de categoria numa
+        // regra que já impunha fluxo preserva o fluxo de propósito: as duas
+        // decisões foram tomadas pela pessoa, em momentos diferentes.
+        ...(flowType ? { flowType } : {}),
         ...(atual.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
       },
       { merge: true }
@@ -600,24 +1014,44 @@ export async function incrementarHitsRegras(
   for (const padrao of padroes) contagem.set(padrao, (contagem.get(padrao) ?? 0) + 1)
   if (contagem.size === 0) return
 
-  // `set` com merge, e não `update`: `update` falha quando o documento não
-  // existe e derruba o batch INTEIRO. Como isto roda depois de
-  // `aplicarCategorias`, uma regra apagada noutra aba faria a rota responder
-  // 502 dizendo "não categorizadas" — com as categorias já gravadas.
-  const batch = adminDb().batch()
-  for (const [padrao, hits] of contagem) {
-    batch.set(
-      adminDb().doc(p.regra(uid, idDaRegra(padrao))),
-      { hits: FieldValue.increment(hits) },
-      { merge: true }
-    )
-  }
+  /**
+   * O contador incrementa **só o que ainda existe**, e não recria o apagado.
+   *
+   * A versão anterior usava `set(..., { merge: true })` para não derrubar o
+   * batch quando o documento sumisse — `update` falha no inexistente e leva o
+   * lote inteiro junto, fazendo a rota responder erro com as categorias já
+   * gravadas. Mas `set` com merge **cria** o documento, e o que nascia era
+   * `{ hits: 1 }`: uma regra sem `pattern` e sem `category`.
+   *
+   * Esse fantasma quebrava a tela de regras — a ordenação chama
+   * `pattern.localeCompare` no desempate por `hits`, e `pattern` era
+   * `undefined`. Uma categorização em andamento numa aba, uma exclusão em
+   * outra, e a lista parava de abrir.
+   *
+   * A leitura antes de escrever resolve os dois: quem foi apagado fica
+   * apagado, e o batch continua sem `update` em documento ausente.
+   */
+  const refs = [...contagem.keys()].map((padrao) =>
+    adminDb().doc(p.regra(uid, idDaRegra(padrao)))
+  )
 
-  // E mesmo assim, engolindo a falha: contador de uso é telemetria. O trabalho
-  // de verdade já foi feito, e derrubar a resposta por causa dele seria mentir
-  // sobre o resultado.
   try {
-    await batch.commit()
+    const existentes = await adminDb().getAll(...refs)
+    const batch = adminDb().batch()
+    let aIncrementar = 0
+
+    for (const [i, [padrao, hits]] of [...contagem.entries()].entries()) {
+      if (!existentes[i]?.exists) continue
+      batch.update(adminDb().doc(p.regra(uid, idDaRegra(padrao))), {
+        hits: FieldValue.increment(hits),
+      })
+      aIncrementar += 1
+    }
+
+    // E mesmo assim, engolindo a falha: contador de uso é telemetria. O
+    // trabalho de verdade já foi feito, e derrubar a resposta por causa dele
+    // seria mentir sobre o resultado.
+    if (aIncrementar > 0) await batch.commit()
   } catch (erro) {
     console.error(
       'Falha ao contabilizar hits de regras:',
@@ -714,6 +1148,10 @@ export async function lerRollup(uid: string, mes: string): Promise<Rollup> {
     // na LEITURA — e não em cada tela — é o que impede o `undefined` de vazar
     // para um `Math.abs` e virar `NaN` no meio de um gráfico.
     refundByCategory: data.refundByCategory ?? porCategoriaVazio(),
+    // Zerado quando o rollup é anterior à C2. A origem cai para a lista de
+    // contas, e é por isso que `origemDoRollup` devolve `null` em vez de
+    // chutar `fatura`.
+    byAccountKind: data.byAccountKind ?? contagemPorTipoVazia(),
   }
 }
 
@@ -762,6 +1200,14 @@ export async function recalcularRollup(uid: string, mes: string): Promise<Rollup
 
   const rollupRef = adminDb().doc(p.rollup(uid, mes))
 
+  // Fora da transação de propósito: o `kind` é imutável desde a C6, então esta
+  // leitura não tem o que perder para uma escrita concorrente — e trazê-la
+  // para dentro somaria as contas ao conjunto travado pela transação, o que
+  // faria toda importação simultânea colidir com todo recálculo.
+  const tipoPorConta = new Map(
+    (await listarContas(uid)).map((c) => [c.id, c.kind] as const)
+  )
+
   return await adminDb().runTransaction(async (tx) => {
     const snap = await tx.get(query)
 
@@ -772,6 +1218,8 @@ export async function recalcularRollup(uid: string, mes: string): Promise<Rollup
         amountCents: t.amountCents,
         category: t.category,
         flowType: resolvedFlowType(t),
+        // Documento legado não guarda o tipo; o `accountId` ainda resolve.
+        accountKind: t.accountKind ?? tipoPorConta.get(t.accountId),
       }
     })
 
@@ -802,6 +1250,7 @@ function paraTransacao(d: FirebaseFirestore.DocumentSnapshot): TransacaoLida {
   return {
     fingerprint: d.id,
     accountId: t.accountId,
+    accountKind: t.accountKind,
     importId: t.importId,
     occurredOn: t.occurredOn,
     month: t.month,
@@ -827,6 +1276,54 @@ export async function listarTransacoesDoMes(uid: string, mes: string) {
     .get()
 
   return snap.docs.map(paraTransacao)
+}
+
+/**
+ * Lê N rollups de uma vez. Spec 003 §5 D7 e §8 C7.
+ *
+ * **Sem documento agregado novo, de propósito.** Um rollup anual seria um
+ * segundo agregado para divergir do primeiro, e o custo de manter agregado em
+ * dia já foi cobrado uma vez por `recalcularRollup()`. Seis meses são seis
+ * leituras de documento num `getAll` — barato o bastante para não valer uma
+ * coleção que pode mentir.
+ *
+ * Mês sem rollup volta como rollup vazio, e não é omitido: a série precisa do
+ * buraco para desenhar a queda.
+ */
+export async function lerRollups(
+  uid: string,
+  meses: readonly string[]
+): Promise<Rollup[]> {
+  if (meses.length === 0) return []
+
+  const docs = await adminDb().getAll(
+    ...meses.map((mes) => adminDb().doc(p.rollup(uid, mes)))
+  )
+
+  return docs.map((snap, i) => {
+    if (!snap.exists) return rollupVazio(meses[i])
+    const data = snap.data() as Rollup
+    return {
+      ...data,
+      month: meses[i],
+      totalRefundCents: data.totalRefundCents ?? 0,
+      totalTransferCents: data.totalTransferCents ?? 0,
+      refundByCategory: data.refundByCategory ?? porCategoriaVazio(),
+      byAccountKind: data.byAccountKind ?? contagemPorTipoVazia(),
+    }
+  })
+}
+
+/**
+ * A origem que a tela do mês deve obedecer. Spec 003 §8 C2.
+ *
+ * Tenta o rollup primeiro, que é uma leitura de documento já feita pela
+ * página. Só quando ele não sabe — mês vazio, ou agregado anterior a esta
+ * versão — é que a lista de contas é consultada, e aí a conta corrente
+ * prevalece sobre a ausência de informação.
+ */
+export async function origemDoMes(uid: string, rollup: Rollup): Promise<Origem> {
+  return origemDoRollup(rollup) ?? origemDasContas(await listarContas(uid))
 }
 
 export async function contarTransacoes(uid: string): Promise<number> {

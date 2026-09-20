@@ -200,11 +200,16 @@ export const ofxAdapter: SourceAdapter = {
     const stmt = bloco(texto, 'BANKTRANLIST') ?? texto
     let periodStart: string | undefined
     let periodEnd: string | undefined
+    // Guardado separado de `periodEnd` de propósito: só vale como fechamento
+    // o `DTEND` que o arquivo DECLAROU. O `periodEnd` deduzido das transações
+    // logo abaixo é a última compra, e não a data em que a fatura fecha.
+    let dtend: string | undefined
     try {
       const s = tag(stmt, 'DTSTART')
       const e = tag(stmt, 'DTEND')
       periodStart = s ? parseOfxDate(s) : undefined
       periodEnd = e ? parseOfxDate(e) : undefined
+      dtend = periodEnd
     } catch {
       // Período é informativo. Data de transação ilegível vira descarte; data
       // de período ilegível não deve derrubar o import inteiro.
@@ -217,11 +222,15 @@ export const ofxAdapter: SourceAdapter = {
       periodEnd ??= datas[datas.length - 1]
     }
 
+    const conta = detectarConta(texto)
+
     return {
       transactions,
-      account: detectarConta(texto),
+      account: conta,
       periodStart,
       periodEnd,
+      // Só fatura de cartão tem fechamento, e só o `DTEND` declarado serve.
+      closingDate: conta?.kind === 'credit_card' ? dtend : undefined,
       descartadas,
     }
   },

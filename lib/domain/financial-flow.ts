@@ -11,12 +11,114 @@ import type { RawTransaction } from '@/lib/sources/types'
 export const FLOW_TYPES = ['expense', 'income', 'transfer', 'refund'] as const
 export type FlowType = (typeof FLOW_TYPES)[number]
 
+/**
+ * Como cada fluxo se chama na tela.
+ *
+ * Em português de fatura, e não em jargão: ninguém corrige um lançamento
+ * escolhendo entre `expense` e `transfer`. A palavra precisa ser a que a
+ * pessoa usaria para descrever a linha.
+ */
+export const FLOW_LABEL: Record<FlowType, string> = {
+  expense: 'Compra',
+  income: 'Entrada',
+  refund: 'Estorno',
+  transfer: 'Pagamento / transferência',
+}
+
+/** O que cada escolha muda nos totais, dito na hora de escolher. */
+export const FLOW_EXPLICACAO: Record<FlowType, string> = {
+  expense: 'entra no gasto da categoria',
+  income: 'entra como receita',
+  refund: 'abate o gasto da categoria',
+  transfer: 'fica fora de gastos e receitas',
+}
+
 export const STATEMENT_PROFILES = [
   'bank_account',
   'credit_card_positive_expenses',
   'credit_card_negative_expenses',
 ] as const
 export type StatementProfile = (typeof STATEMENT_PROFILES)[number]
+
+/** Quantos valores de cada sinal existem num arquivo. */
+export interface DistribuicaoDeSinal {
+  positivos: number
+  negativos: number
+}
+
+/**
+ * A categoria que sobrevive a uma troca de fluxo. Spec 003 §8 C5.
+ *
+ * Mora no domínio, e não no repositório, porque é regra de negócio pura — e
+ * porque precisava ser testável sem subir Firestore. Foi um defeito achado por
+ * revisão externa que a trouxe para cá.
+ *
+ * Os três casos que importam:
+ *
+ *   - **transferência e entrada** têm categoria obrigatória pelo próprio
+ *     fluxo: `outros` (neutra) e `receita`;
+ *   - **saindo de receita** para gasto, a categoria antiga não vale — manter
+ *     `receita` poria salário dentro da pizza de gastos;
+ *   - **saindo de transferência**, o `outros` que estava lá não foi escolhido
+ *     por ninguém. O import o impõe a toda transferência, com
+ *     `categorySource: 'rule'`. Preservá-lo ao virar compra transformaria um
+ *     padrão do sistema em decisão da pessoa — e, como a fila de pendentes
+ *     seleciona `category === null`, a linha nunca mais chegaria à IA.
+ *
+ * Categoria que a pessoa escolheu de fato (`'user'`) sobrevive sempre: ali
+ * houve decisão.
+ */
+export function categoriaAposFluxo<C extends string>(
+  de: FlowType,
+  para: FlowType,
+  atual: C | null,
+  origemAtual: 'ai' | 'rule' | 'user' | null
+): C | null {
+  if (para === 'transfer') return 'outros' as C
+  if (para === 'income') return 'receita' as C
+  if (atual === 'receita') return null
+  if (de === 'transfer' && atual === 'outros' && origemAtual !== 'user') return null
+  return atual
+}
+
+/**
+ * O perfil que o próprio arquivo sugere. Spec 003 §8 C1.
+ *
+ * A pergunta *"como o arquivo representa os valores?"* era a mais abstrata da
+ * importação, e a que mais travava quem não é do ramo — e o arquivo a responde
+ * sozinho. **Numa fatura, compra é a esmagadora maioria das linhas:** o
+ * pagamento recebido é um lançamento, estorno é exceção, e todo o resto é
+ * compra. Então o sinal da maioria é o sinal da compra.
+ *
+ * Devolve `null` quando não dá para afirmar — arquivo vazio, empate, ou duas
+ * colunas de valor. Aí a tela pergunta, em vez de chutar: errar aqui inverte
+ * **todos** os números do mês, que é o defeito que a 001 §5 documentou.
+ *
+ * `MAIORIA_MINIMA` é 60% porque uma fatura real fica bem acima disso; perto de
+ * 50% o arquivo provavelmente não é uma fatura, e aí a pergunta é honesta.
+ */
+const MAIORIA_MINIMA = 0.6
+
+export function perfilSugerido(
+  sinais: DistribuicaoDeSinal
+): StatementProfile | null {
+  const total = sinais.positivos + sinais.negativos
+  if (total === 0) return null
+
+  const maioria = Math.max(sinais.positivos, sinais.negativos)
+  if (maioria / total < MAIORIA_MINIMA) return null
+
+  return sinais.positivos > sinais.negativos
+    ? 'credit_card_positive_expenses'
+    : 'credit_card_negative_expenses'
+}
+
+/** O que o perfil diz sobre o sinal, em uma frase que a pessoa reconhece. */
+export const PERFIL_EXPLICACAO: Record<StatementProfile, string> = {
+  bank_account: 'entradas são positivas e saídas negativas',
+  credit_card_positive_expenses: 'compras aparecem como valor positivo',
+  credit_card_negative_expenses: 'compras aparecem como valor negativo',
+}
 
 export interface FlowTransaction {
   amountCents: number

@@ -1,7 +1,6 @@
 import type { Metadata } from 'next'
 import { Geist, Geist_Mono, Bodoni_Moda } from 'next/font/google'
-import { Analytics } from '@vercel/analytics/next'
-import { SpeedInsights } from '@vercel/speed-insights/next'
+import { Medicao } from '@/components/analytics'
 import './globals.css'
 
 const geistSans = Geist({
@@ -36,7 +35,7 @@ const serifada = Bodoni_Moda({
 export const metadata: Metadata = {
   title: 'Dashboard Financeiro',
   description:
-    'Importe o extrato do seu banco e veja seus gastos categorizados por IA.',
+    'Importe a fatura do seu cartão e veja no que ela foi gasta, categorizada por IA.',
   robots: {
     // Dados financeiros pessoais atrás de login não têm por que ser indexados.
     index: false,
@@ -52,8 +51,10 @@ export default function RootLayout({ children }: LayoutProps<'/'>) {
     >
       <body className="flex min-h-full flex-col">
         {children}
-        <Analytics />
-        <SpeedInsights />
+        {/* Medição e banner de consentimento. O `<Analytics>` e o
+            `<SpeedInsights>` crus não entram aqui: quem decide se eles são
+            montados é o consentimento (ver `components/analytics.tsx`). */}
+        <Medicao />
       </body>
     </html>
   )

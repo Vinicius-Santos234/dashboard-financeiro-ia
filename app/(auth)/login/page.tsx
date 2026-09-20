@@ -95,7 +95,7 @@ function Formulario() {
     <div className="flex w-full max-w-sm flex-col gap-10">
       <div>
         <Marca size={36} className="mb-8 text-suave" />
-        <p className="rotulo">Finanças pessoais</p>
+        <p className="rotulo">Controlador de fatura</p>
         <h1 className="mt-3 font-display text-[2.75rem] leading-[1.05] tracking-tight">
           Dashboard
           <br />
@@ -103,8 +103,8 @@ function Formulario() {
         </h1>
         <p className="mt-4 text-sm leading-relaxed text-suave">
           {modo === 'entrar'
-            ? 'Importe o extrato do seu banco e veja para onde o dinheiro foi.'
-            : 'Crie uma conta para começar a acompanhar seus gastos.'}
+            ? 'Importe a fatura do seu cartão e veja no que ela foi gasta — e quanto da sua renda ela consumiu.'
+            : 'Crie uma conta para acompanhar no que a fatura do seu cartão vai.'}
         </p>
       </div>
 

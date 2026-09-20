@@ -129,7 +129,11 @@ export function planejarCategorizacao(
       continue
     }
 
-    const regra = encontrarRegra(clean, regras)
+    // O fluxo entra na busca: uma regra de `receita` não pode categorizar uma
+    // compra. Aqui só chegam `expense` e `refund` — entrada e transferência
+    // saíram antes —, e passar o fluxo deixa isso explícito em vez de
+    // depender dessa ordem continuar verdadeira.
+    const regra = encontrarRegra(clean, regras, flowType)
     if (regra) {
       prontas.push({
         fingerprint: transacao.fingerprint,

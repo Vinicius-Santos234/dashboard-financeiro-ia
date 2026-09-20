@@ -44,8 +44,32 @@ export interface LinhaDescartada {
 export interface ParseResult {
   transactions: RawTransaction[]
   account?: ContaDetectada
+  /**
+   * O período OBSERVADO: a primeira e a última data que apareceram.
+   *
+   * Quando o arquivo declara o período no cabeçalho, é ele; quando não
+   * declara, é deduzido das transações. Serve para a tela dizer *"de tal a tal
+   * dia"* — **não** serve para deduzir o fechamento da fatura. Ver
+   * `closingDate`.
+   */
   periodStart?: string
   periodEnd?: string
+  /**
+   * A data de fechamento **declarada pelo arquivo**, e só isso.
+   *
+   * Existe por um defeito: `periodEnd` era usado como sugestão de dia de
+   * fechamento, e `periodEnd` quase nunca é um fechamento. Num CSV ele é a
+   * data da **última compra**; num OFX sem `DTEND`, idem. Numa fatura Nubank
+   * que fecha dia 13, a última compra pode ser dia 3 — e o app configurava
+   * fechamento no dia 3, reparticionando a fatura inteira em torno de uma data
+   * inventada, com lançamentos indo parar em meses que a pessoa nunca
+   * importou.
+   *
+   * Só o OFX de **cartão** com `<DTEND>` explícito preenche este campo. O CSV
+   * nunca preenche: não existe onde ler isso num CSV, e a pessoa informa na
+   * tela de Conta.
+   */
+  closingDate?: string
   /**
    * Linhas que a fonte trouxe e o parser não conseguiu ler.
    *
