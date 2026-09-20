@@ -4,12 +4,47 @@ import { createHash, randomBytes } from 'node:crypto'
 import { config } from 'dotenv'
 import type { FlowType } from '../lib/domain/financial-flow'
 
-config({ path: '.env.local', quiet: true })
+function argument(name: string): string | undefined {
+  return process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3)
+}
+
+/**
+ * Ambiente e credencial vêm por argumento, como em `repair:card-flows` e
+ * `migrar:faturas`.
+ *
+ * Sem isto, rodar o seed contra produção exigia **apontar o `.env.local` para
+ * produção** — e esquecer de voltar deixa toda operação de desenvolvimento
+ * mirando o banco real. O arquivo de ambiente é escolhido, não trocado.
+ */
+config({ path: argument('env-file') ?? '.env.local', quiet: true })
+
+const credential = argument('credential')
+if (credential) {
+  const data = JSON.parse(readFileSync(credential, 'utf8'))
+  process.env.FIREBASE_PROJECT_ID = data.project_id
+  process.env.FIREBASE_CLIENT_EMAIL = data.client_email
+  process.env.FIREBASE_PRIVATE_KEY = data.private_key
+}
+
+/**
+ * O portão que faltava, e este script é o que mais precisa dele.
+ *
+ * `seed:demo` começa com `apagarTudoDoUsuario`: ele **destrói** a árvore do
+ * usuário demo antes de recriá-la. Os scripts irmãos já exigiam `--project`
+ * para escrever, e eles são menos destrutivos que este.
+ */
+const expectedProject = argument('project')?.trim()
+if (expectedProject && process.env.FIREBASE_PROJECT_ID !== expectedProject) {
+  throw new Error(
+    `O projeto Firebase carregado é "${process.env.FIREBASE_PROJECT_ID}" e ` +
+      `--project pediu "${expectedProject}". Nada foi alterado.`
+  )
+}
 
 const email = process.env.NEXT_PUBLIC_DEMO_EMAIL
 if (!email) {
   throw new Error(
-    'Defina NEXT_PUBLIC_DEMO_EMAIL no .env.local antes de gerar o demo.'
+    'Defina NEXT_PUBLIC_DEMO_EMAIL no arquivo de ambiente antes de gerar o demo.'
   )
 }
 if (!email.toLowerCase().includes('demo')) {
