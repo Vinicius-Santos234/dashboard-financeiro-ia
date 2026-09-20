@@ -1,5 +1,5 @@
 import { exigirSessao } from '@/lib/firebase/session'
-import { listarTransacoesDoMes, lerRollup } from '@/lib/firestore/repo'
+import { listarTransacoesDoMes, lerRollup, origemDoMes } from '@/lib/firestore/repo'
 import { formatCents } from '@/lib/domain/money'
 import { CATEGORIAS, CATEGORIA_COR, CATEGORIA_LABEL, type Categoria } from '@/lib/domain/categories'
 import { mesAnterior, mesAtual, mesLegivel, mesSeguinte, mesValido } from '@/lib/domain/month'
@@ -39,6 +39,11 @@ export default async function TransacoesPage({
   const gastoLiquido = totalNetExpenseCents(rollup)
   const saldo = rollup.totalInCents - gastoLiquido
 
+  // A lista obedece à origem pelo mesmo motivo que o resumo (003 §4): "Receitas
+  // R$ 0,00" e "Resultado −R$ 1.622" numa fatura são dois números que o cartão
+  // não tem, e um deles é negativo o mês inteiro.
+  const ehFatura = (await origemDoMes(uid, rollup)) === 'fatura'
+
   return (
     <div className="flex flex-col gap-10">
       <header className="flex flex-wrap items-end justify-between gap-6">
@@ -70,23 +75,42 @@ export default async function TransacoesPage({
         </nav>
       </header>
 
-      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
-        <Numero rotulo="Receitas" valor={formatCents(rollup.totalInCents)} entrada />
-        <Numero
-          rotulo="Gastos líquidos"
-          valor={formatCents(-gastoLiquido)}
-          detalhe={
-            estornos > 0
-              ? `${formatCents(-gastoBruto)} + ${formatCents(estornos)} em estornos`
-              : undefined
-          }
-        />
-        <Numero
-          rotulo="Pagamentos / transf."
-          valor={formatCents(rollup.totalTransferCents)}
-        />
-        <Numero rotulo="Resultado" valor={formatCents(saldo)} entrada={saldo >= 0} />
-      </section>
+      {ehFatura ? (
+        <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-3">
+          <Numero
+            rotulo="Total da fatura"
+            valor={formatCents(-gastoLiquido)}
+            detalhe={
+              estornos > 0
+                ? `${formatCents(-gastoBruto)} + ${formatCents(estornos)} em estornos`
+                : undefined
+            }
+          />
+          <Numero rotulo="Estornos" valor={formatCents(estornos)} entrada />
+          <Numero
+            rotulo="Pagamentos da fatura"
+            valor={formatCents(rollup.totalTransferCents)}
+          />
+        </section>
+      ) : (
+        <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
+          <Numero rotulo="Receitas" valor={formatCents(rollup.totalInCents)} entrada />
+          <Numero
+            rotulo="Gastos líquidos"
+            valor={formatCents(-gastoLiquido)}
+            detalhe={
+              estornos > 0
+                ? `${formatCents(-gastoBruto)} + ${formatCents(estornos)} em estornos`
+                : undefined
+            }
+          />
+          <Numero
+            rotulo="Pagamentos / transf."
+            valor={formatCents(rollup.totalTransferCents)}
+          />
+          <Numero rotulo="Resultado" valor={formatCents(saldo)} entrada={saldo >= 0} />
+        </section>
+      )}
 
       {!demo && <CategorizarPendentes key={mes} month={mes}
         quantidade={todas.filter((t) => t.category === null && !t.aiOptOut).length} />}
@@ -122,7 +146,7 @@ export default async function TransacoesPage({
               href="/importar"
               className="mt-3 inline-block text-sm text-texto underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:decoration-texto"
             >
-              Importar um extrato
+              {ehFatura ? 'Importar uma fatura' : 'Importar um extrato'}
             </a>
           )}
         </div>

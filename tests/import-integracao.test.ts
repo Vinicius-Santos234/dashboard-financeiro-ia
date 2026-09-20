@@ -69,6 +69,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
 
     const r = await repo.gravarTransacoes(UID, lote, {
       accountId: CONTA,
+      accountKind: 'checking',
       importId: 'import-teste',
       source: 'ofx',
       descriptionClean: (t) => t.description,
@@ -102,6 +103,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
         amountCents: t.amountCents,
         flowType: t.flowType,
         category: t.category,
+        accountKind: t.accountKind,
       }))
 
     expect(divergencias(guardado, calcularRollup(MES, linhas))).toEqual([])
@@ -118,6 +120,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
 
     const r = await repo.gravarTransacoes(UID, lote, {
       accountId: CONTA,
+      accountKind: 'checking',
       importId: 'import-teste-2',
       source: 'ofx',
       descriptionClean: (t) => t.description,
@@ -161,6 +164,7 @@ describe.skipIf(!temAdmin)('import de ponta a ponta', () => {
         amountCents: t.amountCents,
         flowType: t.flowType,
         category: t.category,
+        accountKind: t.accountKind,
       }))
 
     expect(divergencias(guardado, calcularRollup(MES, linhas))).toEqual([])

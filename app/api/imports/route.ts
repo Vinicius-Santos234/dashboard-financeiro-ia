@@ -15,15 +15,23 @@ import { ValorInvalidoError } from '@/lib/domain/money'
 import { atribuirFingerprints } from '@/lib/domain/fingerprint'
 import {
   classifyTransactions,
+  resolvedFlowType,
   STATEMENT_PROFILES,
   summarizeFlows,
   type StatementProfile,
 } from '@/lib/domain/financial-flow'
+import { fechamentoSugerido, periodoDaFatura } from '@/lib/domain/invoice'
+import { fluxoDaRegra } from '@/lib/domain/rules'
 import { anonymize } from '@/lib/privacy/anonymize'
 import {
+  configurarFatura,
   contaPadrao,
   gravarTransacoes,
   importsComMesmoHash,
+  lerPerfil,
+  listarContas,
+  listarRegras,
+  obterConta,
   registrarImport,
   atualizarImport,
 } from '@/lib/firestore/repo'
@@ -215,19 +223,75 @@ export async function POST(request: Request) {
       ? 'credit_card_negative_expenses'
       : 'bank_account'
 
-  const transactions = classifyTransactions(lido.transactions, financialProfile)
+  /**
+   * As regras de fluxo entram DEPOIS do classificador e antes de tudo mais.
+   * Spec 003 §5 D5.
+   *
+   * O `flowType` decide como a linha participa dos totais, e isso acontece no
+   * import — antes de qualquer chamada à IA. Uma correção que a pessoa fez no
+   * mês passado (`PAG*CONDOMINIO` é conta paga, não pagamento de fatura) só
+   * vale para os próximos meses se for aplicada aqui.
+   *
+   * Roda sobre a descrição crua, que é onde a confusão acontece, e antes da
+   * prévia: o que a tela conta por tipo tem de ser o que vai ser gravado.
+   */
+  const regrasDeFluxo = await listarRegras(uid)
+  const transactions = classifyTransactions(lido.transactions, financialProfile).map(
+    (transacao) => {
+      const imposto = fluxoDaRegra(transacao.description, regrasDeFluxo)
+      return imposto ? { ...transacao, flowType: imposto } : transacao
+    }
+  )
   const flowSummary = summarizeFlows(transactions)
 
   // A prévia percorre exatamente o mesmo parser e a mesma normalização do
   // import real. Nada é persistido; ela existe para a pessoa detectar sinal
   // invertido antes de confirmar.
   if (new URL(request.url).searchParams.get('prever') === '1') {
+    /**
+     * O fechamento já configurado para cartão, se houver. Spec 003 §8 C8.
+     *
+     * A prévia precisa dele para poder avisar o que antes acontecia calado:
+     * uma fatura atravessa dois meses civis, e **sem dia de fechamento o app
+     * agrupa pelo calendário** — então importar a fatura de setembro engorda
+     * agosto, e a pessoa não tem como saber por quê.
+     */
+    const fechamentoDoCartao =
+      financialProfile === 'bank_account'
+        ? null
+        : ((await listarContas(uid)).find(
+            (c) => c.kind === 'credit_card' && c.closingDay !== null
+          )?.closingDay ??
+          // Conta ainda não existe na primeira importação; o que vale é o que
+          // a pessoa declarou no perfil, e é ele que a conta vai herdar.
+          (await lerPerfil(uid)).fechamentoPadraoCartao)
+
     return NextResponse.json({
       periodo: { de: lido.periodStart ?? null, ate: lido.periodEnd ?? null },
       lidas: transactions.length,
       descartadas: lido.descartadas,
       financialProfile,
+      fechamentoDoCartao,
       flowSummary,
+      /**
+       * As primeiras linhas **como o app as entendeu**, e não como estão no
+       * arquivo. Spec 003 §8 C1.
+       *
+       * É o que substitui a pergunta abstrata sobre convenção de sinal: em vez
+       * de pedir para a pessoa descrever o formato do arquivo dela, o app
+       * mostra três lançamentos dela já interpretados — data, descrição e o
+       * tipo que cada um recebeu. Reconhecer a própria compra é uma tarefa que
+       * qualquer pessoa faz; descrever uma convenção de sinal não é.
+       *
+       * Sai da MESMA lista que vai ser gravada, por isso prova o caminho
+       * inteiro e não uma simulação dele.
+       */
+      amostra: transactions.slice(0, 3).map((t) => ({
+        occurredOn: t.occurredOn,
+        description: t.description,
+        amountCents: t.amountCents,
+        flowType: resolvedFlowType(t),
+      })),
     })
   }
 
@@ -235,15 +299,70 @@ export async function POST(request: Request) {
   const fileHash = hashDoArquivo(bytes)
   const anteriores = await importsComMesmoHash(uid, fileHash)
 
+  const kindDaConta =
+    lido.account?.kind ??
+    (financialProfile === 'bank_account' ? 'checking' : 'credit_card')
+
+  // Sem id de conta no arquivo, o nome precisa dizer de que extrato ele veio.
+  // `Conta principal` para os dois era metade do defeito da C6: o nome é o que
+  // a pessoa lê na tela, e "minha fatura está dentro da conta principal" é uma
+  // frase que não descreve nada que ela reconheça.
   const accountId = await contaPadrao(uid, {
     name: lido.account?.id
       ? `${lido.account.institution ?? 'Conta'} ${lido.account.id}`
-      : 'Conta principal',
+      : kindDaConta === 'credit_card'
+        ? 'Cartão principal'
+        : 'Conta principal',
     institution: lido.account?.institution ?? null,
-    kind:
-      lido.account?.kind ??
-      (financialProfile === 'bank_account' ? 'checking' : 'credit_card'),
+    kind: kindDaConta,
   })
+
+  /**
+   * O fechamento da fatura. Spec 003 §8 C8.
+   *
+   * Vem de `lido.closingDate`, que **só** o OFX de cartão com `<DTEND>`
+   * declarado preenche — nunca de `periodEnd`.
+   *
+   * A distinção custou um defeito: `periodEnd` é a última data observada, e
+   * num CSV isso é a última compra. Uma fatura Nubank que fecha dia 13 com
+   * última compra dia 3 configurava fechamento no dia **3**, e a partir daí
+   * cada importação reparticionava tudo em torno de uma data inventada —
+   * inclusive jogando lançamentos num mês que a pessoa nunca importou.
+   *
+   * A precedência é **pessoa antes de arquivo**, nesta ordem:
+   *
+   *   1. o que a conta já tem — se existe, alguém decidiu, e decisão não se
+   *      sobrescreve;
+   *   2. o fechamento que a pessoa declarou no perfil antes de ter cartão
+   *      cadastrado. Declaração explícita ganha de dedução;
+   *   3. o `DTEND` do arquivo, que é um palpite bom mas ainda é palpite.
+   *
+   * Em qualquer caso a tela de Conta mostra o valor e de onde ele veio, para
+   * a pessoa poder corrigir.
+   */
+  const conta = await obterConta(uid, accountId)
+  let closingDay = conta?.closingDay ?? null
+
+  // `closingDayFonte` diferente de `null` significa que alguém já decidiu —
+  // inclusive quem decidiu **apagar** e agrupar pelo mês civil. Só conta que
+  // nunca foi configurada aceita preenchimento automático.
+  const jaDecidido = conta?.closingDayFonte != null
+
+  if (kindDaConta === 'credit_card' && closingDay === null && !jaDecidido) {
+    const perfil = await lerPerfil(uid)
+    const daPessoa = perfil.fechamentoPadraoCartao
+    const doArquivo = fechamentoSugerido(lido.closingDate)
+    const escolhido = daPessoa ?? doArquivo
+
+    if (escolhido !== null) {
+      await configurarFatura(uid, accountId, {
+        closingDay: escolhido,
+        dueDay: conta?.dueDay ?? perfil.vencimentoPadraoCartao ?? null,
+        fonte: daPessoa !== null ? 'pessoa' : 'arquivo',
+      })
+      closingDay = escolhido
+    }
+  }
 
   const comFingerprint = atribuirFingerprints(accountId, transactions)
 
@@ -269,6 +388,8 @@ export async function POST(request: Request) {
       comFingerprint,
       {
         accountId,
+        accountKind: kindDaConta,
+        closingDay,
         importId,
         source,
         descriptionClean: (t) => anonymize(t.description),
@@ -284,6 +405,20 @@ export async function POST(request: Request) {
       importId,
       accountId,
       periodo: { de: lido.periodStart, ate: lido.periodEnd },
+      /**
+       * Os períodos em que as transações **foram realmente gravadas**.
+       *
+       * Não dá para deduzir isso da data da primeira compra: com fechamento
+       * configurado, uma compra de 28/09 vai para a fatura de outubro. O link
+       * "Revisar e categorizar" usava `periodo.de.slice(0, 7)` e mandava a
+       * pessoa para setembro, onde não havia nada do que ela acabara de
+       * importar — deixando os pendentes sem revisão.
+       */
+      periodosGravados: [
+        ...new Set(
+          comFingerprint.map((t) => periodoDaFatura(t.occurredOn, closingDay))
+        ),
+      ].sort(),
       lidas: lido.transactions.length,
       importadas: gravadas,
       duplicadas: jaExistiam,

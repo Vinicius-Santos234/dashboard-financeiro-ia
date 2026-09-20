@@ -1,5 +1,6 @@
 import Papa from 'papaparse'
 import { parseAmountToCents } from '@/lib/domain/money'
+import type { DistribuicaoDeSinal } from '@/lib/domain/financial-flow'
 import { detectDateFormat, parseCsvDate, type FormatoData } from './date'
 import type {
   LinhaDescartada,
@@ -45,6 +46,17 @@ export interface InspecaoCsv {
   sugestao: Partial<CsvMapping>
   /** `false` quando dd/mm e mm/dd empataram: a tela precisa perguntar. */
   formatoDataCerto: boolean
+  /**
+   * Quantos valores são positivos e quantos são negativos, na coluna de
+   * valor. Spec 003 §8 C1.
+   *
+   * Existe para a tela **parar de perguntar** a convenção de sinal. Era a
+   * pergunta mais abstrata do app — *"como o arquivo representa os valores?"*
+   * — e a única que o arquivo respondia sozinho: numa fatura, compra é a
+   * esmagadora maioria das linhas, então o **sinal da maioria é o sinal da
+   * compra**.
+   */
+  sinais: DistribuicaoDeSinal
 }
 
 function semBom(texto: string): string {
@@ -92,6 +104,40 @@ function acharColuna(colunas: string[], pistas: string[]): string | undefined {
 }
 
 /** Lê o arquivo só para a tela de mapeamento — não importa nada. */
+/**
+ * Conta positivos e negativos na coluna de valor.
+ *
+ * Linha que não parseia é simplesmente ignorada: aqui o objetivo é sugerir, e
+ * uma linha ilegível não deve derrubar a sugestão nem a inspeção. Quem recusa
+ * valor inválido é o `parse`, no import de verdade.
+ *
+ * Arquivo com **duas colunas** (entradas e saídas separadas) não tem convenção
+ * de sinal para adivinhar — o sinal sai da coluna em que o número está —,
+ * então a contagem volta zerada e a tela não oferece a inferência.
+ */
+function contarSinais(
+  linhas: readonly Record<string, string>[],
+  colunaValor: string | undefined,
+  colunaSaida: string | undefined
+): DistribuicaoDeSinal {
+  if (!colunaValor || colunaSaida) return { positivos: 0, negativos: 0 }
+
+  let positivos = 0
+  let negativos = 0
+  for (const linha of linhas) {
+    const bruto = linha[colunaValor]
+    if (!bruto) continue
+    try {
+      const centavos = parseAmountToCents(bruto)
+      if (centavos > 0) positivos += 1
+      else if (centavos < 0) negativos += 1
+    } catch {
+      // Linha ilegível não vota.
+    }
+  }
+  return { positivos, negativos }
+}
+
 export function inspecionar(input: ArrayBuffer | string): InspecaoCsv {
   const { data, meta, errors } = Papa.parse<Record<string, string>>(texto(input), {
     header: true,
@@ -112,14 +158,17 @@ export function inspecionar(input: ArrayBuffer | string): InspecaoCsv {
     ? detectDateFormat(data.map((l) => l[colunaData] ?? ''))
     : { formato: 'dd/mm/yyyy' as FormatoData, certeza: false }
 
+  const colunaValor = acharColuna(colunas, PISTAS_VALOR)
+
   return {
     colunas,
     amostra: data.slice(0, 5),
     totalLinhas: data.length,
+    sinais: contarSinais(data, colunaValor, colunaSaida),
     sugestao: {
       colunaData,
       colunaDescricao: acharColuna(colunas, PISTAS_DESCRICAO),
-      colunaValor: acharColuna(colunas, PISTAS_VALOR),
+      colunaValor,
       colunaValorSaida: colunaSaida,
       // Só sugere formato quando a detecção TEM certeza. Sugerir mesmo sem
       // certeza fazia a tela copiar o palpite para o mapeamento, e a recusa de

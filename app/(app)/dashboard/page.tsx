@@ -1,8 +1,14 @@
+import Link from 'next/link'
 import { exigirSessao } from '@/lib/firebase/session'
-import { lerInsight, lerRollup } from '@/lib/firestore/repo'
+import { lerInsight, lerPerfil, lerRollup, origemDoMes } from '@/lib/firestore/repo'
 import { formatCents } from '@/lib/domain/money'
 import { CATEGORIAS, CATEGORIA_COR, CATEGORIA_LABEL } from '@/lib/domain/categories'
 import { mesAnterior, mesAtual, mesLegivel, mesValido } from '@/lib/domain/month'
+import {
+  DIAS_PARA_RENDA_ENVELHECER,
+  diasDesde,
+  percentualDaRenda,
+} from '@/lib/domain/renda'
 import { Numero } from '../numero'
 import { CategoryChart, type FatiaCategoria } from './category-chart'
 import { InsightsPanel } from './insights-panel'
@@ -19,11 +25,17 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
 
   const mes = mesValido(params.mes) ? params.mes : mesAtual()
   const anterior = mesAnterior(mes)
-  const [rollup, rollupAnterior, insight] = await Promise.all([
+  const [rollup, rollupAnterior, insight, perfil] = await Promise.all([
     lerRollup(uid, mes),
     lerRollup(uid, anterior),
     lerInsight(uid, mes),
+    lerPerfil(uid),
   ])
+
+  // A origem decide QUAIS números existem, não só como eles se chamam.
+  // Spec 003 §5 D3: cartão não tem saldo, e não tem recebido.
+  const origem = await origemDoMes(uid, rollup)
+  const ehFatura = origem === 'fatura'
 
   // As fatias são o gasto BRUTO por categoria, e por isso somam exatamente
   // `gastoBrutoCents` — o critério de aceite da spec §8. O estorno não é
@@ -48,6 +60,11 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
   const liquidoAnteriorPorCategoria = categoriasLiquidas(rollupAnterior)
   const gastos = CATEGORIAS.filter((c) => c !== 'receita')
 
+  const percentual = percentualDaRenda(gastoLiquido, perfil.rendaMensalCents)
+  const rendaVelha =
+    perfil.rendaAtualizadaEm !== null &&
+    diasDesde(perfil.rendaAtualizadaEm) > DIAS_PARA_RENDA_ENVELHECER
+
   return (
     <div className="flex flex-col gap-12">
       {/* Cabeçalho: o mês é o assunto da página, então ele é o título — em
@@ -55,7 +72,7 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
           mês é ação secundária. */}
       <header className="flex flex-wrap items-end justify-between gap-6">
         <div>
-          <p className="rotulo">Resumo do mês</p>
+          <p className="rotulo">{ehFatura ? 'Fatura de' : 'Resumo do mês'}</p>
           <h1 className="mt-2 font-display text-4xl leading-none tracking-tight sm:text-5xl">
             {mesLegivel(mes)}
           </h1>
@@ -75,51 +92,93 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
         </form>
       </header>
 
-      {/* Os quatro números.
+      {/* Os números.
           Sem cartões com borda: as hairlines verticais bastam para separar, e
           borda em tudo é o que mais "aperta" uma interface. O valor em tamanho
           grande e peso leve — número grande e pesado grita; grande e leve tem
-          dinheiro. */}
-      {/* O `bg-linha` do pai aparece pelos vãos de 1px do `gap-px` e vira a
+          dinheiro.
+
+          O `bg-linha` do pai aparece pelos vãos de 1px do `gap-px` e vira a
           divisória — sem desenhar borda em célula nenhuma, que é o que
-          duplicaria traço nos encontros. */}
-      <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-5">
-        <Numero
-          rotulo="Total gasto"
-          valor={formatCents(gastoLiquido)}
-          // O detalhe existe para a conta fechar na tela: sem ele, a pizza
-          // soma o bruto e o card mostra o líquido, e a diferença fica sem
-          // explicação nenhuma à vista.
-          detalhe={
-            estornos > 0
-              ? `${formatCents(bruto)} − ${formatCents(estornos)} em estornos`
-              : undefined
-          }
-        />
-        <Numero rotulo="Total recebido" valor={formatCents(rollup.totalInCents)} entrada />
-        <Numero
-          rotulo="Pagamentos / transf."
-          valor={formatCents(rollup.totalTransferCents)}
-        />
-        <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
-        <Numero
-          rotulo="Maior categoria"
-          valor={maior?.label ?? '—'}
-          detalhe={maior ? formatCents(maior.value) : undefined}
-          cor={maior ? CATEGORIA_COR[maior.category] : undefined}
-        />
-      </section>
+          duplicaria traço nos encontros.
+
+          QUAIS números aparecem depende da origem (003 D3). Numa fatura, saldo
+          e recebido não existem: o cartão não tem saldo, e o "recebido" dele
+          seria o pagamento da própria fatura, contado ao contrário. */}
+      {ehFatura ? (
+        <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-4">
+          <Numero
+            rotulo="Total da fatura"
+            valor={formatCents(gastoLiquido)}
+            detalhe={
+              estornos > 0
+                ? `${formatCents(bruto)} − ${formatCents(estornos)} em estornos`
+                : undefined
+            }
+          />
+          <Numero rotulo="Estornos" valor={formatCents(estornos)} entrada />
+          <Numero
+            rotulo="Maior categoria"
+            valor={maior?.label ?? '—'}
+            detalhe={maior ? formatCents(maior.value) : undefined}
+            cor={maior ? CATEGORIA_COR[maior.category] : undefined}
+          />
+          {/* Sem renda informada, a célula fala do que falta em vez de
+              mostrar `0%`. Um denominador ausente e um zerado levam a
+              leituras opostas (003 §7). */}
+          <Numero
+            rotulo="Da sua renda"
+            valor={percentual === null ? '—' : `${percentual.toFixed(0)}%`}
+            detalhe={
+              percentual === null
+                ? 'informe sua renda em Conta'
+                : rendaVelha
+                  ? 'renda declarada há mais de 6 meses'
+                  : `sobre ${formatCents(perfil.rendaMensalCents ?? 0)} por mês`
+            }
+          />
+        </section>
+      ) : (
+        <section className="grid gap-px border-y border-linha bg-linha sm:grid-cols-2 lg:grid-cols-5">
+          <Numero
+            rotulo="Total gasto"
+            // O detalhe existe para a conta fechar na tela: sem ele, a pizza
+            // soma o bruto e o card mostra o líquido, e a diferença fica sem
+            // explicação nenhuma à vista.
+            valor={formatCents(gastoLiquido)}
+            detalhe={
+              estornos > 0
+                ? `${formatCents(bruto)} − ${formatCents(estornos)} em estornos`
+                : undefined
+            }
+          />
+          <Numero rotulo="Total recebido" valor={formatCents(rollup.totalInCents)} entrada />
+          <Numero
+            rotulo="Pagamentos / transf."
+            valor={formatCents(rollup.totalTransferCents)}
+          />
+          <Numero rotulo="Saldo" valor={formatCents(saldo)} entrada={saldo >= 0} />
+          <Numero
+            rotulo="Maior categoria"
+            valor={maior?.label ?? '—'}
+            detalhe={maior ? formatCents(maior.value) : undefined}
+            cor={maior ? CATEGORIA_COR[maior.category] : undefined}
+          />
+        </section>
+      )}
 
       <section>
         <div className="flex items-baseline justify-between gap-4">
-          <h2 className="font-display text-2xl">Onde o dinheiro foi</h2>
+          <h2 className="font-display text-2xl">
+            {ehFatura ? 'No que a fatura foi gasta' : 'Onde o dinheiro foi'}
+          </h2>
           {fatias.length > 0 && (
             <p className="text-xs text-fraco">Clique numa fatia para ver as transações</p>
           )}
         </div>
 
         {fatias.length === 0 ? (
-          <Vazio />
+          <Vazio ehFatura={ehFatura} />
         ) : (
           <div className="mt-6">
             <CategoryChart
@@ -132,9 +191,15 @@ export default async function DashboardPage({ searchParams }: PageProps<'/dashbo
       </section>
 
       <section>
-        <h2 className="font-display text-2xl">
-          Contra {mesLegivel(anterior)}
-        </h2>
+        <div className="flex flex-wrap items-baseline justify-between gap-4">
+          <h2 className="font-display text-2xl">Contra {mesLegivel(anterior)}</h2>
+          <Link
+            href={`/tendencia?ate=${mes}`}
+            className="text-sm text-fraco underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:text-texto"
+          >
+            Ver os últimos 6 meses
+          </Link>
+        </div>
 
         <table className="mt-6 w-full text-left text-sm">
           <thead>
@@ -218,15 +283,19 @@ function Variacao({ percentual, temAtual }: { percentual: number | null; temAtua
   )
 }
 
-function Vazio() {
+function Vazio({ ehFatura }: { ehFatura: boolean }) {
   return (
     <div className="mt-6 border border-dashed border-linha px-8 py-16 text-center">
-      <p className="text-sm text-suave">Nenhum gasto registrado neste mês.</p>
+      <p className="text-sm text-suave">
+        {ehFatura
+          ? 'Nenhuma compra registrada neste mês.'
+          : 'Nenhum gasto registrado neste mês.'}
+      </p>
       <a
         href="/importar"
         className="mt-3 inline-block text-sm text-texto underline decoration-linha-forte underline-offset-4 transition-colors duration-300 hover:decoration-texto"
       >
-        Importar um extrato
+        {ehFatura ? 'Importar uma fatura' : 'Importar um extrato'}
       </a>
     </div>
   )

@@ -6,7 +6,9 @@ import { Marca } from '@/components/marca'
 
 const NAV = [
   { href: '/dashboard', label: 'Resumo' },
-  { href: '/transacoes', label: 'Transações' },
+  { href: '/transacoes', label: 'Lançamentos' },
+  { href: '/tendencia', label: 'Tendência' },
+  { href: '/regras', label: 'Regras' },
   { href: '/importar', label: 'Importar' },
   { href: '/conta', label: 'Conta' },
 ]
@@ -98,9 +100,16 @@ function Rodape({ email, demo }: { email: string | null; demo: boolean }) {
           <div className="max-w-md">
             <p className="rotulo">Sobre os seus dados</p>
             <p className="mt-3 text-sm leading-relaxed text-suave">
-              O extrato enviado é lido em memória e descartado — só as
+              A fatura enviada é lida em memória e descartada — só as
               transações ficam. Antes de qualquer chamada à IA, CPF, agência,
-              conta e contraparte são removidos da descrição.
+              conta e contraparte são removidos da descrição. O nome do
+              estabelecimento permanece, porque é ele que diz no que você
+              gastou.
+            </p>
+            <p className="mt-3 text-sm leading-relaxed text-suave">
+              O único cookie é o de sessão, que mantém você logado. A medição de
+              audiência é opcional, não usa cookie, e você liga e desliga quando
+              quiser.
             </p>
             <Link
               href="/conta"
